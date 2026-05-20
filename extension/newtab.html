@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Grok Mission Control</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin:0; padding:2rem; background:#0a0a0a; color:#ddd; }
+      .note { max-width: 720px; }
+    </style>
+  </head>
+  <body>
+    <div class="note">
+      <h1>Grok Mission Control — Helium New Tab</h1>
+      <p>
+        This is the extension entry point. In a full build the static Next.js output (or a local dev server)
+        would be embedded or the page would iframe / redirect to <code>http://localhost:3000</code>.
+      </p>
+      <p>
+        The background service worker captures the previous tab's context (URL, selection, readability summary)
+        and can inject it as the first message when the user clicks "New Mission from this page".
+      </p>
+      <p><strong>Current status (v0.2):</strong> Skeleton only. Load via chrome://extensions (dev mode) for testing the new-tab override.</p>
+      <p>See <code>docs/helium-browser-agent.md</code> (to be written) and the ACP harness for the backend contracts.</p>
+    </div>
+    <script>
+      // In real impl: window.location = "http://localhost:3000?fromExtension=1";
+      console.log("[GrokMC Extension] newtab loaded");
+    </script>
+  </body>
+</html>

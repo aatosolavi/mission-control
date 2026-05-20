@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Grok Mission Control",
+  "version": "0.2.0",
+  "description": "Helium-native Mission Control dashboard for ACP-powered Grok agents. New-tab + page context injection.",
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["tabs", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Start Mission from this page"
+  }
+}
