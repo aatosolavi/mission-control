@@ -1,4 +1,4 @@
-# Grok Mission Control
+# Mission Control
 
 **Mission control & orchestration for agentic coding CLIs** — starting with Grok Build.
 

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Terminal</title>
-  <link rel="stylesheet" href="https://esm.sh/xterm@5/css/xterm.css">
+  <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@5.5.0/css/xterm.css">
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -13,12 +13,11 @@
       height: 100%;
       width: 100%;
       overflow: hidden;
-      /* Background is driven by JS (GrokNight / GrokDay) so the whole tab matches the theme */
+      /* Background is driven by JS so the whole tab matches the terminal theme. */
       background: #141414;
     }
     html {
       --terminal-edge-bg: #141414;
-      --terminal-top-gap: 0px;
     }
     #terminal {
       position: absolute;
@@ -26,22 +25,19 @@
       left: 0;
       width: 100%;
       height: 100%;
-      /* Improves font rendering significantly (makes it look closer to native terminals) */
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
-      text-rendering: optimizeLegibility;
       font-synthesis: none;
     }
     #terminal,
     #terminal .xterm,
-    #terminal .xterm-viewport {
+    #terminal .xterm-viewport,
+    #terminal .xterm-screen,
+    #terminal .xterm-rows {
       background: var(--terminal-edge-bg) !important;
     }
     #terminal .xterm {
       overflow: hidden;
-    }
-    #terminal .xterm-screen {
-      transform: translateY(var(--terminal-top-gap));
     }
     #terminal .xterm-viewport {
       scrollbar-width: none;
@@ -73,7 +69,7 @@
 
   <script type="module">
     // xterm + fit via esm.sh (zero build, reliable CDN for MVP)
-    import { Terminal } from 'https://esm.sh/xterm@5';
+    import { Terminal } from 'https://esm.sh/@xterm/xterm@5.5.0';
     import { FitAddon } from 'https://esm.sh/@xterm/addon-fit@0.11';
 
     const grokNight = {
@@ -135,6 +131,7 @@
       currentTheme = theme;
       term.options.theme = theme;
       // Make the entire page (including any area around the xterm canvas) match perfectly
+      document.documentElement.style.background = theme.background;
       document.body.style.background = theme.background;
       document.documentElement.style.setProperty('--terminal-edge-bg', theme.background);
     }
@@ -145,6 +142,7 @@
 
     const params = new URLSearchParams(location.search);
     const cursorParam = params.get('cursor');
+    const blinkParam = params.get('blink');
     if (cursorParam === 'bar' || cursorParam === 'block' || cursorParam === 'underline') {
       localStorage.setItem('grok-terminal-cursor', cursorParam);
     }
@@ -156,11 +154,11 @@
     }
 
     const term = new Terminal({
-      cursorBlink: true,
+      cursorBlink: blinkParam === '1' || blinkParam === 'true',
       cursorStyle,
       fontSize: 13,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-      lineHeight: 1.0,
+      lineHeight: 1.06,
       letterSpacing: 0,
       mouseEvents: true,
       scrollback: 10000,
@@ -169,6 +167,7 @@
       termName: 'xterm-256color',
       drawBoldTextInBrightColors: true,
       minimumContrastRatio: 1,
+      customGlyphs: true,
       theme: getSystemTheme(),
       allowTransparency: false,
     });
@@ -179,9 +178,21 @@
     const container = document.getElementById('terminal');
     const dropOverlay = document.getElementById('drop-overlay');
     term.open(container);
-    console.log('%c[Grok Terminal] renderer: DOM', 'color:#555');
+    let canvasAddon;
+    try {
+      if (params.get('renderer') === 'canvas') {
+        const { CanvasAddon } = await import('https://esm.sh/@xterm/addon-canvas@0.7.0');
+        canvasAddon = new CanvasAddon();
+        term.loadAddon(canvasAddon);
+        console.log('%c[Mission Control] renderer: canvas (forced)', 'color:#555');
+      } else {
+        console.log('%c[Mission Control] renderer: DOM', 'color:#555');
+      }
+    } catch (error) {
+      console.warn('[Mission Control] canvas renderer failed; using DOM renderer', error);
+    }
 
-    // Apply the correct GrokNight / GrokDay theme + body background immediately after open.
+    // Apply the correct terminal theme + body background immediately after open.
     // Then listen for live system theme changes (user flips OS dark/light mode).
     updateThemeFromSystem();
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateThemeFromSystem);
@@ -208,33 +219,6 @@
     let lastSentCols = 0;
     let lastSentRows = 0;
 
-    function getCellDimensions() {
-      const cell = term?._core?._renderService?.dimensions?.css?.cell;
-      if (cell?.width && cell?.height) {
-        return cell;
-      }
-      return null;
-    }
-
-    function fitCoveringViewport() {
-      const cell = getCellDimensions();
-      if (!cell) {
-        fitAddon.fit();
-        return;
-      }
-
-      const rect = container.getBoundingClientRect();
-      const cols = Math.max(2, Math.ceil(rect.width / cell.width));
-      const rows = Math.max(1, Math.floor(rect.height / cell.height));
-      const topGap = Math.max(0, rect.height - rows * cell.height);
-      document.documentElement.style.setProperty('--terminal-top-gap', `${topGap}px`);
-
-      if (cols !== term.cols || rows !== term.rows) {
-        term._core?._renderService?.clear?.();
-        term.resize(cols, rows);
-      }
-    }
-
     function sendResizeIfNeeded() {
       const { cols, rows } = term;
       if (ws && ws.readyState === WebSocket.OPEN && (cols !== lastSentCols || rows !== lastSentRows)) {
@@ -246,7 +230,7 @@
 
     function doFit() {
       try {
-        fitCoveringViewport();
+        fitAddon.fit();
         sendResizeIfNeeded();
         grabFocus();
       } catch (e) {
@@ -261,17 +245,42 @@
     const wsUrl = `${protocol}//${ptyHost}:4322`;
     let ws;
 
-    function connect() {
+    function randomSessionId() {
+      if (crypto?.randomUUID) return crypto.randomUUID();
+      return `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    function getPathSessionId() {
+      const match = location.pathname.match(/^\/(?:t|session)\/([^/?#]+)/);
+      return match ? decodeURIComponent(match[1]) : null;
+    }
+
+    function getSessionId() {
+      const explicit = params.get('session') || getPathSessionId();
+      if (explicit) return explicit;
+
+      const key = 'grok-terminal-session-id';
+      let sessionId = sessionStorage.getItem(key);
+      if (!sessionId) {
+        sessionId = randomSessionId();
+        sessionStorage.setItem(key, sessionId);
+      }
+      return sessionId;
+    }
+
+    const sessionId = getSessionId();
+
+    function connect(cwd) {
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
         doFit();
         grabFocus();
-        // Tell PTY the real size
+        // Tell PTY the real size, then start in the selected workspace.
         setTimeout(() => {
           if (ws.readyState === WebSocket.OPEN) {
             const { cols, rows } = term;
-            ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+            ws.send(JSON.stringify({ type: 'start', sessionId, cols, rows, cwd }));
             grabFocus();
           }
         }, 80);
@@ -352,7 +361,7 @@
           grabFocus();
         }
       } catch (error) {
-        console.error('[Grok Terminal] file drop failed', error);
+        console.error('[Mission Control] file drop failed', error);
         term.write(`\r\n[file attach failed: ${error?.message || error}]\r\n`);
       }
     });
@@ -381,7 +390,8 @@
     });
 
     // Boot
-    connect();
+    const cwdParam = params.get('cwd');
+    connect(cwdParam || undefined);
 
     // One final focus + fit after everything settles
     setTimeout(() => { doFit(); grabFocus(); }, 300);
@@ -390,7 +400,7 @@
     // The server will send the initial prompt.
 
     // Keyboard hint (optional)
-    console.log('%c[Grok Terminal] xterm.js + real local PTY ready. Base colors follow system (GrokNight/GrokDay). ANSI/truecolor left to the PTY.', 'color:#555');
+    console.log('%c[Mission Control] xterm.js + real local PTY ready. Base colors follow system theme. ANSI/truecolor left to the PTY.', 'color:#555');
   </script>
 </body>
 </html>

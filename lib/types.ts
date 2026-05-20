@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Core domain types for Grok Mission Control.
+ * Core domain types for Mission Control.
  *
  * ACP-first architecture (as of v0.2):
  * - Primary harness = "grok-build-acp" using @agentclientprotocol/sdk + `grok agent stdio`

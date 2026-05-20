@@ -1,4 +1,4 @@
-# Grok Mission Control — Architecture & Design Notes (v0.1)
+# Mission Control — Architecture & Design Notes (v0.1)
 
 > One top-level orchestrator (human + lightweight automation) overseeing many parallel agent threads. Local-first, high information density, swappable harnesses. Starting with Grok Build.
 

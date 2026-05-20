@@ -23,17 +23,42 @@ const DEFAULT_START_CWD =
   process.env.GROK_TERMINAL_START_CWD ||
   join(HOME, "Documents/10-19 Work/Personal Projects");
 const STATE_PATH = join(HOME, ".grok-mission-control", "terminal-state.json");
-const GHOSTTY_TERMINFO = "/Applications/Ghostty.app/Contents/Resources/terminfo";
-const USE_GHOSTTY_TERM =
-  process.platform === "darwin" &&
-  (process.env.TERM_PROGRAM === "ghostty" || existsSync(GHOSTTY_TERMINFO));
-const TERMINAL_NAME = USE_GHOSTTY_TERM ? "xterm-ghostty" : "xterm-256color";
+const INSTALLED_LAUNCHER_PATH = join(HOME, ".grok-mission-control", "bin/mc");
+const LEGACY_INSTALLED_LAUNCHER_PATH = join(HOME, ".grok-mission-control", "bin/grok-terminal-launcher");
+const BUILD_LAUNCHER_PATH = join(
+  process.cwd(),
+  "terminal/launcher-ratatui/target/release/mc",
+);
+const LEGACY_BUILD_LAUNCHER_PATH = join(
+  process.cwd(),
+  "terminal/launcher-ratatui/target/release/grok-terminal-launcher",
+);
+const LAUNCHER_PATH =
+  process.env.GROK_TERMINAL_LAUNCHER ||
+  (existsSync(INSTALLED_LAUNCHER_PATH)
+    ? INSTALLED_LAUNCHER_PATH
+    : existsSync(LEGACY_INSTALLED_LAUNCHER_PATH)
+      ? LEGACY_INSTALLED_LAUNCHER_PATH
+      : existsSync(BUILD_LAUNCHER_PATH)
+        ? BUILD_LAUNCHER_PATH
+        : LEGACY_BUILD_LAUNCHER_PATH);
+const LAUNCHER_ENABLED = process.env.GROK_TERMINAL_USE_LAUNCHER !== "0" && existsSync(LAUNCHER_PATH);
+const TERMINAL_NAME = "xterm-256color";
+const SESSION_RETAIN_MS = Number(process.env.GROK_TERMINAL_SESSION_RETAIN_MS || 30000);
+const SESSION_HISTORY_LIMIT = Number(process.env.GROK_TERMINAL_SESSION_HISTORY_LIMIT || 2_000_000);
+
+const sessions = new Map();
 
 const wss = new WebSocketServer({ port: PORT });
 
 console.log(`[PTY Broker] Running under Node ${process.version} (this is required for stable PTY)`);
 console.log(`[PTY Broker] Real shells are available on ws://localhost:${PORT}`);
 console.log(`[PTY Broker] Open http://localhost:4321 in your browser to use the terminal.`);
+if (LAUNCHER_ENABLED) {
+  console.log(`[PTY Broker] Ratatui launcher enabled: ${LAUNCHER_PATH}`);
+} else {
+  console.log(`[PTY Broker] Ratatui launcher unavailable; falling back to ${SHELL}`);
+}
 
 function isDirectory(path) {
   try {
@@ -41,6 +66,13 @@ function isDirectory(path) {
   } catch {
     return false;
   }
+}
+
+function normalizeCwd(path) {
+  if (!path) return null;
+  if (path === "~") return HOME;
+  if (path.startsWith("~/")) return join(HOME, path.slice(2));
+  return path;
 }
 
 function readLastCwd() {
@@ -122,29 +154,144 @@ function startCwdTracking(ptyProcess) {
   return () => clearInterval(interval);
 }
 
+function normalizeSessionId(value) {
+  const raw = typeof value === "string" && value.trim() ? value.trim() : "default";
+  return raw.replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 120) || "default";
+}
+
+function appendHistory(session, data) {
+  session.history += data;
+  if (session.history.length > SESSION_HISTORY_LIMIT) {
+    session.history = session.history.slice(-SESSION_HISTORY_LIMIT);
+  }
+}
+
+function sendToClient(ws, data) {
+  if (ws.readyState === 1) {
+    ws.send(data);
+  }
+}
+
+function broadcast(session, data) {
+  for (const client of session.clients) {
+    sendToClient(client, data);
+  }
+}
+
+function scheduleSessionCleanup(session) {
+  if (session.killTimer || session.clients.size > 0 || !session.ptyProcess) return;
+  session.killTimer = setTimeout(() => {
+    if (session.clients.size === 0) {
+      console.log(`[PTY Broker] Closing idle session ${session.id}`);
+      destroySession(session);
+    }
+  }, SESSION_RETAIN_MS);
+  session.killTimer.unref?.();
+}
+
+function cancelSessionCleanup(session) {
+  if (!session.killTimer) return;
+  clearTimeout(session.killTimer);
+  session.killTimer = null;
+}
+
+function destroySession(session) {
+  cancelSessionCleanup(session);
+  session.stopCwdTracking?.();
+  session.stopCwdTracking = null;
+  if (session.ptyProcess) {
+    try {
+      session.ptyProcess.kill();
+    } catch {}
+    session.ptyProcess = null;
+  }
+  sessions.delete(session.id);
+}
+
+function getSession(id) {
+  const sessionId = normalizeSessionId(id);
+  let session = sessions.get(sessionId);
+  if (!session) {
+    session = {
+      id: sessionId,
+      clients: new Set(),
+      history: "",
+      ptyProcess: null,
+      stopCwdTracking: null,
+      killTimer: null,
+      pendingCols: 80,
+      pendingRows: 24,
+      exited: false,
+    };
+    sessions.set(sessionId, session);
+  }
+  return session;
+}
+
+function spawnPtyForSession(session, cols, rows, requestedCwd) {
+  if (session.ptyProcess) return;
+
+  session.pendingCols = Math.max(1, cols);
+  session.pendingRows = Math.max(1, rows);
+
+  const normalizedCwd = normalizeCwd(requestedCwd);
+  const useLauncher = LAUNCHER_ENABLED && !normalizedCwd;
+  const command = useLauncher ? LAUNCHER_PATH : SHELL;
+  const args = useLauncher ? [] : [];
+  const cwd = normalizedCwd && isDirectory(normalizedCwd) ? normalizedCwd : readLastCwd();
+  console.log(`[PTY Broker] Spawning ${command} for session ${session.id} at ${cols}x${rows} in ${cwd}`);
+
+  try {
+    const env = {
+      ...process.env,
+      TERM: TERMINAL_NAME,
+      COLORTERM: "truecolor",
+      FORCE_COLOR: "3",
+      CLICOLOR: "1",
+      CLICOLOR_FORCE: "1",
+      TERM_PROGRAM: "xterm.js",
+      TERM_PROGRAM_VERSION: process.env.TERM_PROGRAM_VERSION || "5",
+    };
+    delete env.NO_COLOR;
+    delete env.TERMINFO;
+
+    session.ptyProcess = pty.spawn(command, args, {
+      name: TERMINAL_NAME,
+      cols: session.pendingCols,
+      rows: session.pendingRows,
+      cwd,
+      env,
+      useConpty: false,
+    });
+    session.exited = false;
+    session.stopCwdTracking = startCwdTracking(session.ptyProcess);
+
+    session.ptyProcess.onData((data) => {
+      appendHistory(session, data);
+      broadcast(session, data);
+    });
+
+    session.ptyProcess.onExit(({ exitCode, signal }) => {
+      const message = `\r\n[shell exited${signal ? ` (signal ${signal})` : ""} code ${exitCode}]\r\n`;
+      appendHistory(session, message);
+      broadcast(session, message);
+      session.exited = true;
+      destroySession(session);
+    });
+  } catch (err) {
+    const message = `\r\n[failed to spawn shell: ${err.message}]\r\n`;
+    console.error("[PTY Broker] Failed to spawn PTY:", err);
+    appendHistory(session, message);
+    broadcast(session, message);
+    destroySession(session);
+  }
+}
+
 wss.on("connection", (ws) => {
   console.log("[PTY Broker] New client connected");
 
-  // We will spawn the PTY once we know a reasonable initial size.
-  // The client should send an initial resize (or we default to 80x24).
-  let ptyProcess = null;
-  let stopCwdTracking = null;
-  const sendToClient = (data) => {
-    if (ws.readyState === 1) {
-      ws.send(data);
-    }
-  };
-
-  const cleanup = () => {
-    stopCwdTracking?.();
-    stopCwdTracking = null;
-    if (ptyProcess) {
-      try {
-        ptyProcess.kill();
-      } catch {}
-      ptyProcess = null;
-    }
-  };
+  let session = null;
+  let startRequested = false;
 
   ws.on("message", (raw) => {
     const text = raw.toString();
@@ -153,16 +300,32 @@ wss.on("connection", (ws) => {
     if (text.startsWith("{")) {
       try {
         const msg = JSON.parse(text);
+        if (msg.type === "start") {
+          session = getSession(msg.sessionId);
+          cancelSessionCleanup(session);
+          session.clients.add(ws);
+
+          const cols = typeof msg.cols === "number" ? msg.cols : session.pendingCols;
+          const rows = typeof msg.rows === "number" ? msg.rows : session.pendingRows;
+          const cwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
+          startRequested = true;
+          if (session.history) {
+            sendToClient(ws, session.history);
+          }
+          spawnPtyForSession(session, cols, rows, cwd);
+          return;
+        }
+
         if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-          if (ptyProcess) {
+          if (!session) return;
+          session.pendingCols = Math.max(1, msg.cols);
+          session.pendingRows = Math.max(1, msg.rows);
+          if (session.ptyProcess) {
             try {
-              ptyProcess.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
+              session.ptyProcess.resize(session.pendingCols, session.pendingRows);
             } catch (e) {
               console.error("[PTY Broker] resize error:", e.message);
             }
-          } else {
-            // Spawn now that we have a size from the client
-            spawnPty(msg.cols, msg.rows);
           }
           return;
         }
@@ -172,90 +335,45 @@ wss.on("connection", (ws) => {
     }
 
     // Normal user input → write to the real shell
-    if (ptyProcess) {
+    if (session?.ptyProcess) {
       try {
-        ptyProcess.write(text);
+        session.ptyProcess.write(text);
       } catch (e) {
         console.error("[PTY Broker] write error:", e.message);
       }
     } else {
       // Client sent input before telling us the size → spawn with defaults
-      spawnPty(80, 24);
+      startRequested = true;
+      session = session || getSession("default");
+      cancelSessionCleanup(session);
+      session.clients.add(ws);
+      spawnPtyForSession(session, session.pendingCols, session.pendingRows);
       // Give it a moment then write
       setTimeout(() => {
-        if (ptyProcess) ptyProcess.write(text);
+        if (session?.ptyProcess) session.ptyProcess.write(text);
       }, 80);
     }
   });
 
   ws.on("close", () => {
     console.log("[PTY Broker] Client disconnected");
-    cleanup();
+    if (session) {
+      session.clients.delete(ws);
+      scheduleSessionCleanup(session);
+    }
   });
 
   ws.on("error", () => {
-    cleanup();
-  });
-
-  function spawnPty(cols, rows) {
-    if (ws.readyState !== 1) return;
-    if (ptyProcess) return; // already spawned
-
-    const cwd = readLastCwd();
-    console.log(`[PTY Broker] Spawning ${SHELL} at ${cols}x${rows} in ${cwd}`);
-
-    try {
-      const env = {
-        ...process.env,
-        TERM: TERMINAL_NAME,
-        COLORTERM: "truecolor",
-        FORCE_COLOR: "3",
-        CLICOLOR: "1",
-        CLICOLOR_FORCE: "1",
-        TERM_PROGRAM: USE_GHOSTTY_TERM ? "ghostty" : (process.env.TERM_PROGRAM || "xterm.js"),
-        TERM_PROGRAM_VERSION: USE_GHOSTTY_TERM
-          ? (process.env.TERM_PROGRAM_VERSION || "1.3.1")
-          : (process.env.TERM_PROGRAM_VERSION || "5"),
-      };
-      if (USE_GHOSTTY_TERM) {
-        env.TERMINFO = process.env.TERMINFO || GHOSTTY_TERMINFO;
-      }
-      delete env.NO_COLOR;
-
-      ptyProcess = pty.spawn(SHELL, [], {
-        name: TERMINAL_NAME,
-        cols: Math.max(1, cols),
-        rows: Math.max(1, rows),
-        cwd,
-        env,
-        useConpty: false,
-      });
-
-      stopCwdTracking = startCwdTracking(ptyProcess);
-
-      ptyProcess.onData((data) => {
-        sendToClient(data);
-      });
-
-      ptyProcess.onExit(({ exitCode, signal }) => {
-        sendToClient(`\r\n[shell exited${signal ? ` (signal ${signal})` : ""} code ${exitCode}]\r\n`);
-        ws.close();
-      });
-
-      // Send nothing extra — keep it feeling like a plain native terminal
-      // (user can run `clear` if they want a clean slate)
-
-    } catch (err) {
-      console.error("[PTY Broker] Failed to spawn PTY:", err);
-      sendToClient(`\r\n[failed to spawn shell: ${err.message}]\r\n`);
-      ws.close();
+    if (session) {
+      session.clients.delete(ws);
+      scheduleSessionCleanup(session);
     }
-  }
+  });
 
   // If the client never sends a resize, still give them a shell after a short delay
   setTimeout(() => {
-    if (!ptyProcess && ws.readyState === 1) {
-      spawnPty(80, 24);
+    if (session && !session.ptyProcess && startRequested && ws.readyState === 1) {
+      spawnPtyForSession(session, session.pendingCols, session.pendingRows);
     }
   }, 400);
 });

@@ -1,5 +1,5 @@
 /**
- * Grok Terminal — Minimal Level-1 MVP
+ * Mission Control Terminal — Minimal Level-1 MVP
  *
  * A real local shell (zsh/bash) running inside a browser tab via xterm.js + PTY over WebSocket.
  *
@@ -37,7 +37,7 @@ function getHtml(): string {
   try {
     return readFileSync(resolve(import.meta.dir, "index.html"), "utf8");
   } catch {
-    return "<h1>Grok Terminal</h1><p>index.html not found next to server.ts</p>";
+    return "<h1>Mission Control</h1><p>index.html not found next to server.ts</p>";
   }
 }
 
@@ -98,7 +98,7 @@ const server = Bun.serve({
 });
 
 console.log("");
-console.log("🚀  Grok Terminal HTML server ready (Bun)");
+console.log("Mission Control HTML server ready (Bun)");
 console.log(`    Open http://localhost:${PORT} in Helium`);
 console.log("");
 console.log("   The real PTY lives in a separate Node process (terminal/pty-server.mjs on :4322).");

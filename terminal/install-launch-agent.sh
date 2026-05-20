@@ -2,10 +2,16 @@
 set -euo pipefail
 
 LABEL="com.grok-mission-control.terminal"
-ROOT="/Users/aatosmononen/Documents/10-19 Work/Personal Projects/grok-mission-control"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/.grok-mission-control/logs"
+LAUNCHER_BIN="$HOME/.grok-mission-control/bin/mc"
 BUN_BIN="$(command -v bun)"
+NODE_BIN="$(command -v node)"
+CODEX_BIN="$(command -v codex || true)"
+GROK_BIN="$(command -v grok || true)"
+TERMINAL_PATH="$HOME/.grok-mission-control/bin:$HOME/.npm-global/bin:$HOME/.grok/bin:$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 
@@ -23,9 +29,8 @@ cat > "$PLIST" <<PLIST
 
   <key>ProgramArguments</key>
   <array>
-    <string>$BUN_BIN</string>
-    <string>run</string>
-    <string>terminal</string>
+    <string>$NODE_BIN</string>
+    <string>$ROOT/terminal/start.mjs</string>
   </array>
 
   <key>EnvironmentVariables</key>
@@ -33,8 +38,17 @@ cat > "$PLIST" <<PLIST
     <key>BUN_BIN</key>
     <string>$BUN_BIN</string>
 
+    <key>GROK_TERMINAL_LAUNCHER</key>
+    <string>$LAUNCHER_BIN</string>
+
+    <key>GROK_TERMINAL_CODEX_COMMAND</key>
+    <string>${CODEX_BIN:-codex}</string>
+
+    <key>GROK_TERMINAL_GROK_COMMAND</key>
+    <string>${GROK_BIN:-grok}</string>
+
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>$TERMINAL_PATH</string>
   </dict>
 
   <key>RunAtLoad</key>

@@ -12,7 +12,7 @@
  */
 
 console.log(`
-Grok Mission Control — Orchestrator Server (placeholder)
+Mission Control — Orchestrator Server (placeholder)
 
 This will become the authoritative owner of:
   - All agent child processes (grok, future claude, etc.)

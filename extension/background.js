@@ -1,5 +1,5 @@
 /**
- * Grok Mission Control — Background Service Worker (MV3)
+ * Mission Control — Background Service Worker (MV3)
  *
  * Responsibilities (future slices):
  * - Listen for action click or context menu "Start Mission from this page"

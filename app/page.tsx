@@ -330,7 +330,7 @@ export default function MissionControl() {
           <div className="flex items-center gap-2">
             <Terminal className="w-4 h-4 text-emerald-400" />
             <div className="font-semibold tracking-[-0.3px]">
-              Grok Mission Control
+              Mission Control
             </div>
             <div className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/40">
               v0.1

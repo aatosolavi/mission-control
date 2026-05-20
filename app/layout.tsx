@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Grok Mission Control",
+  title: "Mission Control",
   description: "Orchestration dashboard for agentic coding CLIs — one PM, many parallel threads.",
   icons: {
     icon: "/favicon.ico",
