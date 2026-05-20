@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Grok Mission Control",
   "version": "0.2.0",
-  "description": "Helium-native Mission Control dashboard for ACP-powered Grok agents. New-tab + page context injection.",
+  "description": "Real terminal as a browser tab for Helium (xterm.js + local PTY). Minimal MVP of the Grok mission control vision.",
   "chrome_url_overrides": {
     "newtab": "newtab.html"
   },

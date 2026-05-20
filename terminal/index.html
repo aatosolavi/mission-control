@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Grok Terminal</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --bar: #111111;
+      --text: #e5e5e5;
+      --accent: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      overflow: hidden;
+    }
+    #topbar {
+      height: 36px;
+      background: var(--bar);
+      border-bottom: 1px solid #1f1f1f;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      font-size: 12px;
+      letter-spacing: 0.3px;
+      user-select: none;
+    }
+    #topbar .left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #888;
+    }
+    #topbar .left .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 6px var(--accent);
+    }
+    #topbar .right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #666;
+      font-size: 11px;
+    }
+    #topbar button {
+      background: #1a1a1a;
+      border: 1px solid #222;
+      color: #999;
+      font: inherit;
+      font-size: 11px;
+      padding: 3px 9px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #topbar button:hover {
+      background: #222;
+      color: #ddd;
+      border-color: #333;
+    }
+    #terminal {
+      height: calc(100vh - 36px);
+      width: 100%;
+      padding: 4px 0;
+    }
+    .xterm {
+      padding: 8px;
+    }
+    .status {
+      position: absolute;
+      bottom: 8px;
+      right: 14px;
+      font-size: 10px;
+      color: #444;
+      pointer-events: none;
+    }
+    .hint {
+      position: absolute;
+      bottom: 8px;
+      left: 14px;
+      font-size: 10px;
+      color: #333;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <div class="left">
+      <span class="dot"></span>
+      <span id="shell-info">zsh • local</span>
+      <span id="cwd" style="color:#555; font-size:11px;"></span>
+    </div>
+    <div class="right">
+      <span>real PTY • browser tab</span>
+      <button id="reset-btn" title="Kill current shell and start fresh">Reset shell</button>
+      <button id="fit-btn" title="Force fit to window">Fit</button>
+    </div>
+  </div>
+
+  <div id="terminal"></div>
+
+  <div class="hint">Cmd/Ctrl + T in Helium opens another real terminal tab. This is a live local shell.</div>
+
+  <script type="module">
+    // xterm + fit via esm.sh (zero build, reliable CDN for MVP)
+    import { Terminal } from 'https://esm.sh/xterm@5';
+    import { FitAddon } from 'https://esm.sh/@xterm/addon-fit@0.11';
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+      lineHeight: 1.15,
+      letterSpacing: 0,
+      theme: {
+        background: '#0a0a0a',
+        foreground: '#e5e5e5',
+        cursor: '#22c55e',
+        cursorAccent: '#0a0a0a',
+        selectionBackground: '#334155',
+        black: '#1f1f1f',
+        red: '#f87171',
+        green: '#4ade80',
+        yellow: '#fde047',
+        blue: '#60a5fa',
+        magenta: '#c084fc',
+        cyan: '#67e8f9',
+        white: '#e5e5e5',
+        brightBlack: '#3f3f3f',
+        brightRed: '#fca5a5',
+        brightGreen: '#86efac',
+        brightYellow: '#fef08c',
+        brightBlue: '#93c5fd',
+        brightMagenta: '#d8b4fe',
+        brightCyan: '#a5f3fc',
+        brightWhite: '#f4f4f5',
+      },
+      allowTransparency: false,
+    });
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+
+    const container = document.getElementById('terminal');
+    term.open(container);
+
+    // Initial fit
+    function doFit() {
+      try {
+        fitAddon.fit();
+        // Send resize to server
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const { cols, rows } = term;
+          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        }
+      } catch (e) {
+        // ignore during init
+      }
+    }
+
+    // WebSocket connection (same origin as the served page)
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${location.host}/ws`;
+    let ws;
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        document.getElementById('shell-info').textContent = 'zsh • live';
+        doFit();
+        // Tell server current size right away
+        setTimeout(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const { cols, rows } = term;
+            ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+          }
+        }, 50);
+      };
+
+      ws.onmessage = (event) => {
+        term.write(event.data);
+      };
+
+      ws.onclose = () => {
+        document.getElementById('shell-info').textContent = 'zsh • disconnected';
+        term.write('\r\n\r\n[shell session ended — reload page to reconnect]\r\n');
+      };
+
+      ws.onerror = () => {
+        term.write('\r\n[connection error]\r\n');
+      };
+    }
+
+    // Send user input to the real PTY
+    term.onData((data) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    });
+
+    // Handle terminal-driven resize (rare but good)
+    term.onResize(({ cols, rows }) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+      }
+    });
+
+    // Window resize → fit + notify PTY
+    let resizeTimer;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(doFit, 60);
+    });
+
+    // Buttons
+    document.getElementById('fit-btn').addEventListener('click', doFit);
+    document.getElementById('reset-btn').addEventListener('click', () => {
+      if (ws) ws.close();
+      term.clear();
+      term.write('\x1b[2J\x1b[3J\x1b[H'); // clear screen + scrollback
+      setTimeout(connect, 120);
+    });
+
+    // Boot
+    connect();
+
+    // First fit after fonts are ready
+    setTimeout(doFit, 120);
+    setTimeout(doFit, 400);
+
+    // Nice startup banner in the terminal itself (server also sends one)
+    // The server will send the initial prompt.
+
+    // Keyboard hint (optional)
+    console.log('%c[Grok Terminal] xterm.js + real local PTY ready. This tab is a first-class shell.', 'color:#333');
+  </script>
+</body>
+</html>

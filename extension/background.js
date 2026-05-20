@@ -11,8 +11,8 @@
  */
 
 chrome.action.onClicked.addListener(async (tab) => {
-  // Placeholder: open the local Mission Control (user runs `bun dev`)
-  chrome.tabs.create({ url: "http://localhost:3000" });
+  // On the minimal-terminal-mvp branch: open the real PTY terminal tab
+  chrome.tabs.create({ url: "http://localhost:4321" });
 });
 
 // Example: capture context (to be wired to a "New Mission" flow + ACP initial prompt)
