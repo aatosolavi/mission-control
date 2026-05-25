@@ -27,15 +27,17 @@
 
 import { mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath } from "url";
 
 const PORT = Number(process.env.PORT || 4321);
+const currentDir = dirname(fileURLToPath(import.meta.url));
 
 // For fast iteration during testing we re-read the HTML on every request.
 // (Cheap on localhost. We can cache later.)
 function getHtml(): string {
   try {
-    return readFileSync(resolve(import.meta.dir, "index.html"), "utf8");
+    return readFileSync(resolve(currentDir, "index.html"), "utf8");
   } catch {
     return "<h1>Mission Control</h1><p>index.html not found next to server.ts</p>";
   }
