@@ -718,20 +718,20 @@ impl App {
                 if let Err(err) =
                     open_in_editor(&repo.path, self.state.settings.default_ide.as_deref())
                 {
-                    self.set_status(err);
+                    self.set_status(err.to_ascii_lowercase());
                 }
             }
             SideAction::Finder => match open_in_finder(&repo.path) {
-                Ok(()) => self.set_status("opened in Finder"),
-                Err(err) => self.set_status(err),
+                Ok(()) => self.set_status("opened in finder"),
+                Err(err) => self.set_status(err.to_ascii_lowercase()),
             },
             SideAction::CopyPath => match copy_path_to_clipboard(&repo.path) {
                 Ok(()) => self.set_status(format!("copied {}", display_path(&repo.path))),
-                Err(err) => self.set_status(err),
+                Err(err) => self.set_status(err.to_ascii_lowercase()),
             },
             SideAction::GitHub => match open_github(&repo.path) {
                 Ok(url) => self.set_status(format!("opened {url}")),
-                Err(err) => self.set_status(err),
+                Err(err) => self.set_status(err.to_ascii_lowercase()),
             },
         }
     }
@@ -1100,7 +1100,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Line::from(Span::styled(status.clone(), Style::default().fg(ACCENT)))
     } else {
         Line::from(Span::styled(
-            "e editor · f Finder · c copy · g GitHub · dim app = missing CLI",
+            "e editor · f finder · c copy · g github · dim app = missing cli",
             Style::default().fg(Color::DarkGray),
         ))
     };
