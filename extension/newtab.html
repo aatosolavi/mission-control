@@ -4,46 +4,50 @@
     <meta charset="utf-8" />
     <title>Mission Control</title>
     <style>
-      body { font-family: ui-monospace, monospace; margin:0; padding:3rem; background:#0a0a0a; color:#ccc; line-height:1.5; }
+      body {
+        font-family: ui-monospace, monospace;
+        margin: 0;
+        padding: 3rem;
+        background: #141414;
+        color: #e5e5e5;
+        line-height: 1.5;
+      }
       .note { max-width: 620px; }
-      code { background:#111; padding:2px 6px; border-radius:3px; }
-      a { color:#4ade80; }
+      code {
+        background: #1f1f1f;
+        padding: 2px 6px;
+        border-radius: 3px;
+      }
+      a { color: #fb923c; }
     </style>
   </head>
   <body>
     <div class="note">
-      <h1 style="margin:0 0 12px;font-size:28px;color:#eee;">Mission Control</h1>
+      <h1 style="margin:0 0 12px;font-size:28px;color:#fafafa;">Mission Control</h1>
       <p style="margin:0 0 20px;font-size:15px;">
-        A real local shell (zsh) living as a first-class browser tab.
+        A real local shell living as a first-class browser tab.
       </p>
 
       <p>
         <strong>Start the terminal server once:</strong><br>
         <code>bun run terminal</code>
+        <br>
+        <span style="color:#737373;font-size:13px;">(or use the LaunchAgent — it stays up at login)</span>
       </p>
 
       <p>
-        Then open <a href="http://localhost:4321" target="_blank">http://localhost:4321</a>
+        Then open <a href="http://localhost:4321">http://localhost:4321</a>
       </p>
 
-      <p style="margin-top:24px;font-size:13px;color:#666;">
-        In Helium you can now hit <strong>Cmd+T</strong> and get a real terminal instead of a new-tab page.<br>
-        Load this extension folder in chrome://extensions (dev mode) and it will redirect here automatically.
-      </p>
-
-      <p style="margin-top:32px;font-size:12px;color:#444;">
-        This is the minimal Level-1 MVP of “terminal as a browser tab” for the Mission Control project.<br>
-        The richer agent-orchestration dashboard lives on the <code>main</code> branch.
+      <p style="margin-top:24px;font-size:13px;color:#a3a3a3;">
+        In Helium, load this <code>extension/</code> folder in chrome://extensions (dev mode).
+        <strong>Cmd+T</strong> becomes a real terminal.
       </p>
     </div>
 
     <script>
-      // Instant redirect for fast testing in Helium.
-      // When the terminal server is running, new tabs will jump straight to the real PTY.
-      if (location.pathname === "/" || location.pathname === "/index.html") {
-        window.location.replace("http://localhost:4321");
-      }
-      console.log("[Mission Control] newtab override -> redirecting to real PTY");
+      // Instant redirect when the terminal is up.
+      window.location.replace("http://localhost:4321");
     </script>
   </body>
 </html>

@@ -1,100 +1,75 @@
 # Mission Control
 
-**Mission control & orchestration for agentic coding CLIs** — starting with Grok Build.
+**A real local terminal in a browser tab** — plus a Finder-style launcher for workspaces and coding agents.
 
-One top-level "Product Manager" (you + light automation) oversees many parallel agent threads. Create, monitor, peek, steer, and validate from a dense, real-time, local-first interface designed to feel native in privacy-first browsers like Helium.
+Open http://localhost:4321. You get a full PTY (`zsh` / your `$SHELL`), session resume across reloads, file drop attachments, and `mc`: pick a workspace, pick an agent (Grok, Codex, Claude, Amp, Devin, Droid, or Shell), go.
 
-> **Primary surface today:** browser terminal on http://localhost:4321 (PTY broker on :4322).  
-> Run `bun run terminal` (or the LaunchAgent) → open that URL (or Cmd+T in Helium). A full local zsh lives in the tab via xterm.js + PTY.  
-> Canonical checkout: `~/dev/mission-control`. Data + logs: `~/.grok-mission-control/`.
+> **Canonical checkout:** `~/dev/mission-control`  
+> **Data + logs:** `~/.grok-mission-control/`  
+> **Surface:** browser terminal only (no Next.js dashboard)
 
-## Vision (TL;DR)
-
-- Hierarchical orchestration inspired by Factory.ai Missions: strong orchestrator (human first) + fresh worker contexts + explicit validation.
-- Swappable harnesses via clean adapters (Grok Build ACP first, then Claude Code, Codex, custom).
-- Primary interface: Next.js web app (Prompt Kit + Vercel AI SDK + Framer Motion) that later becomes a Chrome extension / new-tab page.
-- Terminal density + web superpowers (cards, timelines, modals, live streaming).
-
-See [docs/architecture.md](./docs/architecture.md) for the full thinking, data model, risks, and recommended implementation order.
-
-## Current Status (MVP in Progress)
-
-We are in the **earliest prototype phase**.
-
-**Immediate goal (next 3–5 days):** A working control plane where you can:
-- Create a thread with a goal
-- Watch live streaming output from real `grok` processes
-- Send steering messages
-- See status at a glance
-- Persist across restarts
-
-We are deliberately starting with the simplest reliable Grok Build integration (`grok -p ... --output-format streaming-json`) before investing in a full ACP client. This gets us real usage data fast.
-
-## Quick Start — Terminal Tab
-
-The **shippable first version** is a real terminal in a browser tab:
+## Quick start
 
 ```bash
 cd ~/dev/mission-control
 bun install
-bun run terminal     # HTML :4321 + PTY :4322
-# open http://localhost:4321  (or let the extension/newtab.html redirect you)
-
-# Install as a macOS Login Item (LaunchAgent, KeepAlive):
-bun run terminal:install
+bun run terminal          # HTML :4321 + PTY broker :4322
+# open http://localhost:4321
 ```
 
-- A full local `zsh` (or your `$SHELL`) runs inside the browser tab.
-- Resize, colors, vim, tmux, Ctrl+C — everything works because it is a real PTY.
-- Perfect as a Helium new-tab page (`Cmd+T` = new shell).
-- LaunchAgent label: `com.grok-mission-control.terminal` (working dir = this repo).
+### Run at login (macOS)
 
-The Next.js dashboard + ACP agent orchestration remains under `app/`, `lib/harness/`, and `server/` and will later embed this same terminal for “raw view per thread”.
+```bash
+bun run terminal:install  # builds `mc` launcher + installs LaunchAgent
+```
 
-You do **not** need the `grok` CLI for the pure terminal MVP.
+- Label: `com.grok-mission-control.terminal`
+- Working directory: this repo
+- Logs: `~/.grok-mission-control/logs/terminal.{out,err}.log`
 
-## Key Architecture Decisions
+```bash
+launchctl kickstart -k gui/$(id -u)/com.grok-mission-control.terminal
+```
 
-- **Dedicated thin orchestrator server** (`server/`) owns all agent processes and SQLite. UI talks to it over HTTP + WebSocket.
-- **Harness abstraction** lives in `lib/harness/`. We will implement `GrokBuildHeadlessAdapter` first, then a real `GrokBuildACPAdapter`.
-- **Human as PM** in v1. Global command bar + per-thread steering. LLM PM agent is v2.
-- **Git worktrees by default** for safe parallelism (future threads will get `--worktree` or equivalent).
-- **Local SQLite** at `~/.grok-mission-control/db.sqlite`.
+## What you get
 
-Full rationale and trade-offs are in `docs/architecture.md`.
+| Piece | Role |
+|---|---|
+| `terminal/server.ts` (Bun) | Serves the HTML UI on **:4321**, attachment uploads |
+| `terminal/pty-server.mjs` (Node) | Real PTY + WebSocket on **:4322** |
+| `terminal/start.mjs` | Starts both |
+| `terminal/launcher-ratatui` → `mc` | Workspace + agent picker inside the PTY |
+| `extension/` | Helium/Chrome new-tab → localhost:4321 |
 
-## Technology
+### Launcher (`mc`)
 
-- Next.js 16 + React 19 + Tailwind v4
-- Prompt Kit (shadcn AI components) + Vercel AI SDK
-- Hono + Bun for the local orchestration server
-- Framer Motion, Zustand, Zod, Sonner
-- better-sqlite3 for durable local state
+- Filter workspaces under `~/dev` (recents first)
+- Apps: **1** Grok · **2** Codex · **3** Claude · **4** Amp · **5** Devin · **6** Droid · **7** Shell
+- From any shell: run `mc` to reopen the picker
 
-## Contributing / Development Notes
+### Themes
 
-This is a personal research + product project. Fast iteration is the priority.
+Orange accent. Light / dark / system:
 
-When adding new UI components, prefer Prompt Kit + shadcn primitives for AI-specific patterns (especially `PromptInput`, `Reasoning`, streaming message containers).
+- `?theme=light` · `?theme=dark` · `?theme=system`
+- **⌘/Ctrl+Shift+L** cycles (stored in `localStorage`)
 
-When touching agent integration, keep the harness interface in mind even if the first implementation is a simple child_process wrapper.
+### Sessions
 
-## Long-term Roadmap (Rough)
+Each browser tab has a session id. Reload reattaches and replays history. Idle sessions are retained for hours so laptop sleep does not kill work. Named paths: `http://localhost:4321/t/main`.
 
-1. v0.1 — Working control plane with one harness (live list + peek + steer)
-2. v0.2 — Real ACP client, permission surfacing, basic summaries, worktree support
-3. v0.3 — Explicit milestone / validation UI, simple LLM PM agent
-4. v1.0 — Multi-harness (Claude Code + others via ACP), Helium extension (new tab + page context), voice
-5. Future — Browser skills as first-class tools, background orchestration, team sharing of missions
+## Docs
 
-## References & Inspiration
+- [docs/browser-terminal.md](./docs/browser-terminal.md) — rendering notes, LaunchAgent, launcher details
+- [terminal/launcher-ratatui/README.md](./terminal/launcher-ratatui/README.md) — `mc` controls
 
-- Factory.ai Missions (orchestrator + fresh workers + validation contracts)
-- Agent Client Protocol (agentclientprotocol.com)
-- Prompt Kit + Vercel AI Elements
-- Grok Build headless + ACP docs (docs.x.ai)
-- Helium browser philosophy (local, private, extensible)
+## Stack
 
----
+- **xterm.js** (CDN) + **@lydell/node-pty** + **ws**
+- **Bun** for the tiny HTML server
+- **Node** for the PTY broker (more reliable than Bun for native PTY on macOS)
+- **Rust / Ratatui** for the in-terminal launcher
 
-**Status:** Actively building the first runnable slice. Everything is subject to violent iteration based on real usage.
+## Status
+
+Terminal-first. The old Next.js orchestration dashboard was removed so this stays small and focused.

@@ -1,6 +1,6 @@
 # Browser Terminal Notes
 
-This branch runs a real local shell inside a browser tab:
+Mission Control is a real local shell inside a browser tab:
 
 - HTML server: `http://localhost:4321`
 - PTY broker: `ws://localhost:4322`
