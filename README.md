@@ -81,7 +81,7 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 **Memory**
 - Last agent per workspace (auto-select on highlight)
 - **`space`** — favorite (`★` floats to top)
-- **`.`** — continue last workspace + agent
+- **`.`** — resume last workspace + agent
 
 **Side actions** (filter empty)
 

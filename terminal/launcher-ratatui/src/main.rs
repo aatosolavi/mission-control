@@ -1425,7 +1425,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Span::styled("enter", Style::default().fg(Color::White)),
             Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
             Span::styled(".", Style::default().fg(Color::White)),
-            Span::styled(" cont  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" resume  ", Style::default().fg(Color::DarkGray)),
             Span::styled("space", Style::default().fg(Color::White)),
             Span::styled(" fav  ", Style::default().fg(Color::DarkGray)),
             Span::styled("1-9", Style::default().fg(Color::White)),

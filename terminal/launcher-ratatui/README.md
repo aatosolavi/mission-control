@@ -44,7 +44,7 @@ Cold-start splash (“T-0 · go for launch”, once per `mc` process, skipped wh
 - `8`: Droid
 - `9`: Shell
 - `enter`: open
-- `.` (filter empty): continue last workspace + agent
+- `.` (filter empty): resume last workspace + agent
 - `space` (filter empty): toggle favorite (`★` at top)
 - `e` (filter empty): open folder in **Cursor.app / IDE** (not the agent)
 - `f` (filter empty): open in Finder
