@@ -2,74 +2,113 @@
 
 **A real local terminal in a browser tab** — plus a Finder-style launcher for workspaces and coding agents.
 
-Open http://localhost:4321. You get a full PTY (`zsh` / your `$SHELL`), session resume across reloads, file drop attachments, and `mc`: pick a workspace, pick an agent (Grok, Codex, Pi, Claude, Amp, Devin, Droid, or Shell), go.
+Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Grok, Amp, Devin, Droid, or a plain shell.
 
-> **Canonical checkout:** `~/dev/mission-control`  
-> **Data + logs:** `~/.grok-mission-control/`  
-> **Surface:** browser terminal only (no Next.js dashboard)
+> Finder for workspaces — double-click opens an agent, not a folder.
 
-## Quick start
+![Mission Control](https://img.shields.io/badge/local--first-orange) ![MIT](https://img.shields.io/badge/license-MIT-blue)
+
+## Install (macOS)
+
+### One-liner
 
 ```bash
-cd ~/dev/mission-control
+curl -fsSL https://raw.githubusercontent.com/aatosolavi/mission-control/main/install.sh | bash
+```
+
+### From a clone
+
+```bash
+git clone https://github.com/aatosolavi/mission-control.git
+cd mission-control
 bun install
-bun run terminal          # HTML :4321 + PTY broker :4322
-# open http://localhost:4321
+bun run terminal:install   # build `mc` + LaunchAgent
+open http://127.0.0.1:4321
 ```
 
-### Run at login (macOS)
+### Requirements
+
+| Tool | Why |
+|---|---|
+| **Node.js 20+** | PTY broker (`@lydell/node-pty`) |
+| **Bun** | Tiny HTML server |
+| **Rust / rustup** | Build the `mc` launcher (prebuilt binaries planned) |
+| **macOS** | LaunchAgent install path (Linux/Windows later) |
+
+Foreground without installing the agent:
 
 ```bash
-bun run terminal:install  # builds `mc` launcher + installs LaunchAgent
-```
-
-- Label: `com.grok-mission-control.terminal`
-- Working directory: this repo
-- Logs: `~/.grok-mission-control/logs/terminal.{out,err}.log`
-
-```bash
-launchctl kickstart -k gui/$(id -u)/com.grok-mission-control.terminal
+bun run terminal
+# → http://127.0.0.1:4321
 ```
 
 ## What you get
 
 | Piece | Role |
 |---|---|
-| `terminal/server.ts` (Bun) | Serves the HTML UI on **:4321**, attachment uploads |
-| `terminal/pty-server.mjs` (Node) | Real PTY + WebSocket on **:4322** |
-| `terminal/start.mjs` | Starts both |
-| `terminal/launcher-ratatui` → `mc` | Workspace + agent picker inside the PTY |
-| `extension/` | Helium/Chrome new-tab → localhost:4321 |
+| Browser UI | xterm.js full-page terminal, light/dark/system, orange accent |
+| PTY broker | Real shell over WebSocket on **127.0.0.1:4322** |
+| `mc` launcher | Filter `~/dev` (or `MC_WORKSPACE_ROOT`), pick agent, go |
+| Sessions | Reload reattaches; idle retain across laptop sleep |
+| Helium extension | `extension/` → Cmd+T becomes a terminal |
 
 ### Launcher (`mc`)
 
-- Filter workspaces under `~/dev` (recents first)
-- Apps: **1** Grok · **2** Codex · **3** Pi · **4** Claude · **5** Amp · **6** Devin · **7** Droid · **8** Shell
-- From any shell: run `mc` to reopen the picker
+| Key | App |
+|-----|-----|
+| 1 | Grok |
+| 2 | Codex |
+| 3 | Pi |
+| 4 | Claude |
+| 5 | Amp |
+| 6 | Devin |
+| 7 | Droid |
+| 8 | Shell |
+
+Missing CLIs are **dimmed**. From any shell: run `mc` again.
 
 ### Themes
 
-Orange accent. Light / dark / system:
-
 - `?theme=light` · `?theme=dark` · `?theme=system`
-- **⌘/Ctrl+Shift+L** cycles (stored in `localStorage`)
+- **⌘/Ctrl+Shift+L** cycles (saved in `localStorage`)
 
-### Sessions
+### Config (env)
 
-Each browser tab has a session id. Reload reattaches and replays history. Idle sessions are retained for hours so laptop sleep does not kill work. Named paths: `http://localhost:4321/t/main`.
+| Variable | Default |
+|---|---|
+| `MC_WORKSPACE_ROOT` | `~/dev` if it exists, else `$HOME` |
+| `MC_DATA_DIR` | `~/.mission-control` (or legacy `~/.grok-mission-control` if present) |
+| `MC_BIND_HOST` | `127.0.0.1` |
+| `MC_LAUNCHER` / `GROK_TERMINAL_*_COMMAND` | paths to `mc` and agent CLIs |
+
+Data, logs, attachments, and the `mc` binary live under the data dir.
+
+## Helium / Chrome new tab
+
+1. `chrome://extensions` → Developer mode  
+2. Load unpacked → select `extension/`  
+3. Cmd+T → Mission Control (when the server is running)
+
+## Security
+
+This is a **full shell as your user** on localhost. Do not expose ports 4321/4322 to the network. See [SECURITY.md](./SECURITY.md).
 
 ## Docs
 
-- [docs/browser-terminal.md](./docs/browser-terminal.md) — rendering notes, LaunchAgent, launcher details
-- [terminal/launcher-ratatui/README.md](./terminal/launcher-ratatui/README.md) — `mc` controls
+- [docs/browser-terminal.md](./docs/browser-terminal.md) — PTY notes, sessions, launcher  
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — how to hack  
+- [terminal/launcher-ratatui/README.md](./terminal/launcher-ratatui/README.md) — `mc` keys  
 
 ## Stack
 
-- **xterm.js** (CDN) + **@lydell/node-pty** + **ws**
-- **Bun** for the tiny HTML server
-- **Node** for the PTY broker (more reliable than Bun for native PTY on macOS)
-- **Rust / Ratatui** for the in-terminal launcher
+- **xterm.js** (CDN) · **@lydell/node-pty** · **ws**
+- **Bun** HTML server · **Node** PTY broker
+- **Rust / Ratatui** launcher
 
 ## Status
 
-Terminal-first. The old Next.js orchestration dashboard was removed so this stays small and focused.
+Terminal-first, local-first, open source (MIT). Built for people who live in agent CLIs and want tabs that feel like Finder for work.
+
+## License
+
+[MIT](./LICENSE)

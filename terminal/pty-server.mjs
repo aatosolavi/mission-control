@@ -15,16 +15,27 @@ import { existsSync, mkdirSync, readFileSync, readlinkSync, statSync, writeFileS
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { WebSocketServer } from "ws";
+import { dataDir } from "./data-dir.mjs";
 
 const PORT = Number(process.env.PORT || 4322);
+const HOST = process.env.MC_BIND_HOST || "127.0.0.1";
 const SHELL = process.env.SHELL || (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
 const HOME = process.env.HOME || process.cwd();
-const DEFAULT_START_CWD =
-  process.env.GROK_TERMINAL_START_CWD ||
-  join(HOME, "dev");
-const STATE_PATH = join(HOME, ".grok-mission-control", "terminal-state.json");
-const INSTALLED_LAUNCHER_PATH = join(HOME, ".grok-mission-control", "bin/mc");
-const LEGACY_INSTALLED_LAUNCHER_PATH = join(HOME, ".grok-mission-control", "bin/grok-terminal-launcher");
+const DATA_DIR = dataDir(HOME);
+
+function defaultStartCwd() {
+  if (process.env.MC_WORKSPACE_ROOT) return process.env.MC_WORKSPACE_ROOT;
+  if (process.env.GROK_TERMINAL_START_CWD) return process.env.GROK_TERMINAL_START_CWD;
+  const dev = join(HOME, "dev");
+  if (existsSync(dev) && statSync(dev).isDirectory()) return dev;
+  return HOME;
+}
+
+const DEFAULT_START_CWD = defaultStartCwd();
+const STATE_PATH = join(DATA_DIR, "terminal-state.json");
+const INSTALLED_LAUNCHER_PATH = join(DATA_DIR, "bin/mc");
+const LEGACY_INSTALLED_LAUNCHER_PATH = join(HOME, ".grok-mission-control", "bin/mc");
+const LEGACY_LAUNCHER_NAME = join(HOME, ".grok-mission-control", "bin/grok-terminal-launcher");
 const BUILD_LAUNCHER_PATH = join(
   process.cwd(),
   "terminal/launcher-ratatui/target/release/mc",
@@ -34,26 +45,41 @@ const LEGACY_BUILD_LAUNCHER_PATH = join(
   "terminal/launcher-ratatui/target/release/grok-terminal-launcher",
 );
 const LAUNCHER_PATH =
+  process.env.MC_LAUNCHER ||
   process.env.GROK_TERMINAL_LAUNCHER ||
   (existsSync(INSTALLED_LAUNCHER_PATH)
     ? INSTALLED_LAUNCHER_PATH
     : existsSync(LEGACY_INSTALLED_LAUNCHER_PATH)
       ? LEGACY_INSTALLED_LAUNCHER_PATH
-      : existsSync(BUILD_LAUNCHER_PATH)
-        ? BUILD_LAUNCHER_PATH
-        : LEGACY_BUILD_LAUNCHER_PATH);
-const LAUNCHER_ENABLED = process.env.GROK_TERMINAL_USE_LAUNCHER !== "0" && existsSync(LAUNCHER_PATH);
+      : existsSync(LEGACY_LAUNCHER_NAME)
+        ? LEGACY_LAUNCHER_NAME
+        : existsSync(BUILD_LAUNCHER_PATH)
+          ? BUILD_LAUNCHER_PATH
+          : LEGACY_BUILD_LAUNCHER_PATH);
+const LAUNCHER_ENABLED =
+  process.env.MC_USE_LAUNCHER !== "0" &&
+  process.env.GROK_TERMINAL_USE_LAUNCHER !== "0" &&
+  existsSync(LAUNCHER_PATH);
 const TERMINAL_NAME = "xterm-256color";
-const SESSION_RETAIN_MS = Number(process.env.GROK_TERMINAL_SESSION_RETAIN_MS || 6 * 60 * 60 * 1000);
-const SESSION_HISTORY_LIMIT = Number(process.env.GROK_TERMINAL_SESSION_HISTORY_LIMIT || 2_000_000);
+const SESSION_RETAIN_MS = Number(
+  process.env.MC_SESSION_RETAIN_MS ||
+    process.env.GROK_TERMINAL_SESSION_RETAIN_MS ||
+    6 * 60 * 60 * 1000,
+);
+const SESSION_HISTORY_LIMIT = Number(
+  process.env.MC_SESSION_HISTORY_LIMIT ||
+    process.env.GROK_TERMINAL_SESSION_HISTORY_LIMIT ||
+    2_000_000,
+);
 
 const sessions = new Map();
 
-const wss = new WebSocketServer({ port: PORT });
+const wss = new WebSocketServer({ host: HOST, port: PORT });
 
 console.log(`[PTY Broker] Running under Node ${process.version} (this is required for stable PTY)`);
-console.log(`[PTY Broker] Real shells are available on ws://localhost:${PORT}`);
-console.log(`[PTY Broker] Open http://localhost:4321 in your browser to use the terminal.`);
+console.log(`[PTY Broker] Data dir: ${DATA_DIR}`);
+console.log(`[PTY Broker] Real shells are available on ws://${HOST}:${PORT}`);
+console.log(`[PTY Broker] Open http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:4321 in your browser to use the terminal.`);
 if (LAUNCHER_ENABLED) {
   console.log(`[PTY Broker] Ratatui launcher enabled: ${LAUNCHER_PATH}`);
 } else {

@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LABEL="com.grok-mission-control.terminal"
+NEW_LABEL="com.mission-control.terminal"
+LEGACY_LABEL="com.grok-mission-control.terminal"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG_DIR="$HOME/.grok-mission-control/logs"
-LAUNCHER_BIN="$HOME/.grok-mission-control/bin/mc"
+PLIST="$HOME/Library/LaunchAgents/$NEW_LABEL.plist"
+LEGACY_PLIST="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
+
+# Prefer modern data dir; keep using legacy if that is where state already lives.
+if [[ -n "${MC_DATA_DIR:-}" ]]; then
+  DATA_DIR="$MC_DATA_DIR"
+elif [[ -d "$HOME/.mission-control" ]]; then
+  DATA_DIR="$HOME/.mission-control"
+elif [[ -d "$HOME/.grok-mission-control" ]]; then
+  DATA_DIR="$HOME/.grok-mission-control"
+else
+  DATA_DIR="$HOME/.mission-control"
+fi
+
+LOG_DIR="$DATA_DIR/logs"
+LAUNCHER_BIN="$DATA_DIR/bin/mc"
 BUN_BIN="$(command -v bun)"
 NODE_BIN="$(command -v node)"
 CODEX_BIN="$(command -v codex || true)"
@@ -16,9 +30,23 @@ CLAUDE_BIN="$(command -v claude || true)"
 AMP_BIN="$(command -v amp || true)"
 DEVIN_BIN="$(command -v devin || true)"
 DROID_BIN="$(command -v droid || true)"
-TERMINAL_PATH="$HOME/.grok-mission-control/bin:$HOME/.npm-global/bin:$HOME/.grok/bin:$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+TERMINAL_PATH="$DATA_DIR/bin:$HOME/.npm-global/bin:$HOME/.grok/bin:$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+# Workspace root for launcher + default cwd (optional override).
+if [[ -n "${MC_WORKSPACE_ROOT:-}" ]]; then
+  WORKSPACE_ROOT="$MC_WORKSPACE_ROOT"
+elif [[ -d "$HOME/dev" ]]; then
+  WORKSPACE_ROOT="$HOME/dev"
+else
+  WORKSPACE_ROOT="$HOME"
+fi
+
+mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR" "$DATA_DIR/bin"
+
+# Remove legacy agent if present so we don't double-spawn.
+if [[ -f "$LEGACY_PLIST" ]]; then
+  launchctl bootout "gui/$(id -u)" "$LEGACY_PLIST" >/dev/null 2>&1 || true
+fi
 
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -27,7 +55,7 @@ cat > "$PLIST" <<PLIST
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>$LABEL</string>
+  <string>$NEW_LABEL</string>
 
   <key>WorkingDirectory</key>
   <string>$ROOT</string>
@@ -42,6 +70,18 @@ cat > "$PLIST" <<PLIST
   <dict>
     <key>BUN_BIN</key>
     <string>$BUN_BIN</string>
+
+    <key>MC_DATA_DIR</key>
+    <string>$DATA_DIR</string>
+
+    <key>MC_WORKSPACE_ROOT</key>
+    <string>$WORKSPACE_ROOT</string>
+
+    <key>MC_BIND_HOST</key>
+    <string>127.0.0.1</string>
+
+    <key>MC_LAUNCHER</key>
+    <string>$LAUNCHER_BIN</string>
 
     <key>GROK_TERMINAL_LAUNCHER</key>
     <string>$LAUNCHER_BIN</string>
@@ -88,10 +128,12 @@ PLIST
 
 launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-launchctl kickstart -k "gui/$(id -u)/$LABEL"
+launchctl kickstart -k "gui/$(id -u)/$NEW_LABEL"
 
-echo "Installed and started $LABEL"
-echo "Terminal URL: http://localhost:4321"
+echo "Installed and started $NEW_LABEL"
+echo "Data dir: $DATA_DIR"
+echo "Workspace root: $WORKSPACE_ROOT"
+echo "Terminal URL: http://127.0.0.1:4321"
 echo "Logs:"
 echo "  $LOG_DIR/terminal.out.log"
 echo "  $LOG_DIR/terminal.err.log"

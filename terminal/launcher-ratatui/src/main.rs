@@ -29,10 +29,8 @@ use ratatui::{
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-const DEFAULT_ROOT: &str = "dev";
 const MAX_WIDTH: u16 = 92;
 const MAX_RECENTS: usize = 20;
-const RECENTS_FILE: &str = ".grok-mission-control/recent-workspaces.txt";
 /// Mission Control accent — orange-500 (#f97316).
 const ACCENT: Color = Color::Rgb(249, 115, 22);
 /// Text on filled accent chips (dark enough for contrast on orange).
@@ -114,6 +112,13 @@ impl Action {
         let key = self.env_command_key()?;
         let default = self.default_command()?;
         Some(env::var(key).unwrap_or_else(|_| default.to_string()))
+    }
+
+    fn is_available(self) -> bool {
+        match self.resolve_command() {
+            None => true, // Shell always available
+            Some(command) => command_available(&command),
+        }
     }
 
     fn index(self) -> usize {
@@ -396,7 +401,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Span::styled(" filter", Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(Span::styled(
-            "backspace edits filter; esc clears filter or closes",
+            "backspace edits filter · esc clears/closes · dim app = missing CLI",
             Style::default().fg(Color::DarkGray),
         )),
     ]);
@@ -416,15 +421,26 @@ fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         }
 
         // Number prefix doubles as the 1–8 keyboard shortcut.
+        // Dim chips when the CLI is missing from PATH.
+        let available = action.is_available();
         let label = format!(" {} {} ", index + 1, action.label());
         let width = label.chars().count() as u16;
         let style = if *action == app.selected_action {
-            Style::default()
-                .fg(ACCENT_ON)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD)
-        } else {
+            if available {
+                Style::default()
+                    .fg(ACCENT_ON)
+                    .bg(ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
+            }
+        } else if available {
             Style::default().fg(Color::Gray)
+        } else {
+            Style::default().fg(Color::DarkGray)
         };
 
         app.hitboxes
@@ -527,21 +543,22 @@ fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
 
 fn discover_repos() -> Vec<Repo> {
     let home = home_dir();
-    let root = home.join(DEFAULT_ROOT);
+    let data = data_dir();
+    let root = workspace_root();
     let mut repos = Vec::new();
     let mut seen = HashSet::new();
 
-    for recent in read_recent_workspaces(&home) {
+    for recent in read_recent_workspaces(&data) {
         add_repo(&mut repos, &mut seen, recent, "recent");
     }
 
-    if let Some(last_cwd) = read_last_cwd(&home) {
+    if let Some(last_cwd) = read_last_cwd(&data) {
         add_repo(&mut repos, &mut seen, last_cwd, "last");
     }
 
     add_repo(&mut repos, &mut seen, root.clone(), "root");
 
-    if let Ok(entries) = fs::read_dir(root) {
+    if let Ok(entries) = fs::read_dir(&root) {
         let mut paths: Vec<PathBuf> = entries
             .flatten()
             .filter_map(|entry| {
@@ -582,8 +599,8 @@ fn add_repo(repos: &mut Vec<Repo>, seen: &mut HashSet<PathBuf>, path: PathBuf, b
     repos.push(Repo { name, path, badge });
 }
 
-fn read_last_cwd(home: &Path) -> Option<PathBuf> {
-    let state_path = home.join(".grok-mission-control/terminal-state.json");
+fn read_last_cwd(data: &Path) -> Option<PathBuf> {
+    let state_path = data.join("terminal-state.json");
     let text = fs::read_to_string(state_path).ok()?;
     let key = "\"lastCwd\"";
     let after_key = text.split(key).nth(1)?;
@@ -593,13 +610,13 @@ fn read_last_cwd(home: &Path) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
-fn recent_workspaces_path(home: &Path) -> PathBuf {
-    home.join(RECENTS_FILE)
+fn recent_workspaces_path(data: &Path) -> PathBuf {
+    data.join("recent-workspaces.txt")
 }
 
-fn read_recent_workspaces(home: &Path) -> Vec<PathBuf> {
+fn read_recent_workspaces(data: &Path) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
-    fs::read_to_string(recent_workspaces_path(home))
+    fs::read_to_string(recent_workspaces_path(data))
         .unwrap_or_default()
         .lines()
         .map(str::trim)
@@ -615,12 +632,12 @@ fn record_recent_workspace(path: &Path) {
         return;
     }
 
-    let home = home_dir();
-    let recents_path = recent_workspaces_path(&home);
+    let data = data_dir();
+    let recents_path = recent_workspaces_path(&data);
     let mut recents = vec![path.to_path_buf()];
     let mut seen = HashSet::from([path.to_path_buf()]);
 
-    for recent in read_recent_workspaces(&home) {
+    for recent in read_recent_workspaces(&data) {
         if seen.insert(recent.clone()) {
             recents.push(recent);
         }
@@ -645,6 +662,64 @@ fn home_dir() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// Prefer MC_DATA_DIR, then ~/.mission-control, then legacy ~/.grok-mission-control.
+fn data_dir() -> PathBuf {
+    if let Ok(value) = env::var("MC_DATA_DIR") {
+        return expand_path(&value);
+    }
+    let home = home_dir();
+    let modern = home.join(".mission-control");
+    let legacy = home.join(".grok-mission-control");
+    if modern.is_dir() {
+        modern
+    } else if legacy.is_dir() {
+        legacy
+    } else {
+        modern
+    }
+}
+
+/// Prefer MC_WORKSPACE_ROOT, then GROK_TERMINAL_START_CWD, then ~/dev if present, else $HOME.
+fn workspace_root() -> PathBuf {
+    if let Ok(value) = env::var("MC_WORKSPACE_ROOT") {
+        return expand_path(&value);
+    }
+    if let Ok(value) = env::var("GROK_TERMINAL_START_CWD") {
+        return expand_path(&value);
+    }
+    let home = home_dir();
+    let dev = home.join("dev");
+    if dev.is_dir() {
+        dev
+    } else {
+        home
+    }
+}
+
+fn expand_path(value: &str) -> PathBuf {
+    if value == "~" {
+        return home_dir();
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        return home_dir().join(rest);
+    }
+    PathBuf::from(value)
+}
+
+fn command_available(command: &str) -> bool {
+    let first = command.split_whitespace().next().unwrap_or(command);
+    if first.contains('/') {
+        return Path::new(first).is_file();
+    }
+    let Some(path_var) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&path_var).any(|dir| {
+        let candidate = dir.join(first);
+        candidate.is_file()
+    })
 }
 
 fn repo_matches(repo: &Repo, query: &str) -> bool {
@@ -720,6 +795,22 @@ fn run_child_app(launch: Launch) -> io::Result<()> {
     let Some(command) = launch.action.resolve_command() else {
         return replace_with_shell(launch);
     };
+
+    if !launch.action.is_available() {
+        eprintln!(
+            "[{}] not found on PATH (looked for `{}`). Install the CLI or set {}.",
+            launch.action.label(),
+            command,
+            launch
+                .action
+                .env_command_key()
+                .unwrap_or("MC_*_COMMAND"),
+        );
+        eprintln!("Press enter to return to Mission Control...");
+        let mut input = String::new();
+        let _ = io::stdin().read_line(&mut input);
+        return Ok(());
+    }
 
     let status = Command::new(&shell)
         .arg("-lc")

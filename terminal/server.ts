@@ -25,13 +25,24 @@
  * The browser then connects to the real PTY broker on :4322.
  */
 
-import { mkdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const PORT = Number(process.env.PORT || 4321);
+const HOST = process.env.MC_BIND_HOST || "127.0.0.1";
 const currentDir = dirname(fileURLToPath(import.meta.url));
+
+function resolveDataDir(): string {
+  if (process.env.MC_DATA_DIR) return process.env.MC_DATA_DIR;
+  const home = process.env.HOME || homedir();
+  const modern = join(home, ".mission-control");
+  const legacy = join(home, ".grok-mission-control");
+  if (existsSync(modern)) return modern;
+  if (existsSync(legacy)) return legacy;
+  return modern;
+}
 
 // For fast iteration during testing we re-read the HTML on every request.
 // (Cheap on localhost. We can cache later.)
@@ -54,12 +65,13 @@ function sanitizeFileName(name: string): string {
 function attachmentDir(): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const random = crypto.randomUUID().slice(0, 8);
-  const dir = join(homedir(), ".grok-mission-control", "attachments", `${stamp}-${random}`);
+  const dir = join(resolveDataDir(), "attachments", `${stamp}-${random}`);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
 const server = Bun.serve({
+  hostname: HOST,
   port: PORT,
 
   async fetch(req: Request) {
@@ -99,9 +111,10 @@ const server = Bun.serve({
 
 });
 
+const openHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
 console.log("");
 console.log("Mission Control HTML server ready (Bun)");
-console.log(`    Open http://localhost:${PORT} in Helium`);
+console.log(`    Open http://${openHost}:${PORT}`);
 console.log("");
 console.log("   The real PTY lives in a separate Node process (terminal/pty-server.mjs on :4322).");
 console.log("   Run `bun run terminal` to start both pieces together.");

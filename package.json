@@ -11,7 +11,8 @@
     "terminal:launcher:install": "node terminal/build-launcher.mjs",
     "terminal:install": "bun run terminal:launcher:install && ./terminal/install-launch-agent.sh",
     "start": "node terminal/start.mjs",
-    "dev": "node terminal/start.mjs"
+    "dev": "node terminal/start.mjs",
+    "install:service": "./terminal/install-launch-agent.sh"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.12",

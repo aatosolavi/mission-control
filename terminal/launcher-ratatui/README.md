@@ -10,10 +10,11 @@ It runs inside the PTY, so xterm.js only has to be a terminal. Keyboard and mous
 bun run terminal:launcher:build
 ```
 
-That builds the release binary and installs it here:
+That builds the release binary and installs it under the data dir:
 
 ```text
-~/.grok-mission-control/bin/mc
+~/.mission-control/bin/mc
+# or legacy: ~/.grok-mission-control/bin/mc
 ```
 
 The PTY broker automatically uses the installed binary when it exists. It can also fall back to this build output during development:

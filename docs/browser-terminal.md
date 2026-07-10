@@ -2,13 +2,15 @@
 
 Mission Control is a real local shell inside a browser tab:
 
-- HTML server: `http://localhost:4321`
-- PTY broker: `ws://localhost:4322`
+- HTML server: `http://127.0.0.1:4321` (bind host configurable via `MC_BIND_HOST`)
+- PTY broker: `ws://127.0.0.1:4322`
 - Entry command: `bun run terminal`
 - Accent: orange (`#f97316` / `#fb923c`)
 - Themes: **system / light / dark** — `?theme=system|light|dark`, or **⌘/Ctrl+Shift+L** to cycle (stored in `localStorage`)
+- Workspace root: `MC_WORKSPACE_ROOT` (default `~/dev` if present, else `$HOME`)
+- Data dir: `MC_DATA_DIR` → `~/.mission-control` (legacy `~/.grok-mission-control` still works)
 
-The PTY broker is a Node process because `@lydell/node-pty` is more reliable there than under Bun on macOS. The Bun process only serves the HTML and attachment upload endpoint.
+The PTY broker is a Node process because `@lydell/node-pty` is more reliable there than under Bun on macOS. The Bun process only serves the HTML and attachment upload endpoint. Both bind to **127.0.0.1** by default.
 
 ## Known Rendering Issue
 
@@ -38,24 +40,20 @@ Preferred future fixes:
 
 ## macOS Login Startup
 
-Canonical repo path: `~/dev/mission-control` (not iCloud Documents). The install script records `WorkingDirectory` and `ProgramArguments` from the checkout you run it in.
+The install script records `WorkingDirectory` and `ProgramArguments` from the checkout you run it in.
 
 ```bash
-cd ~/dev/mission-control
 ./terminal/install-launch-agent.sh
 # or: bun run terminal:install  (also rebuilds the `mc` launcher)
 ```
 
-It installs `~/Library/LaunchAgents/com.grok-mission-control.terminal.plist` and starts the terminal stack at login. Logs go to:
-
-- `~/.grok-mission-control/logs/terminal.out.log`
-- `~/.grok-mission-control/logs/terminal.err.log`
+It installs `~/Library/LaunchAgents/com.mission-control.terminal.plist` (and removes the legacy `com.grok-mission-control.terminal` agent if present). Logs go to `$MC_DATA_DIR/logs/` (usually `~/.mission-control/logs` or the legacy data dir).
 
 Manual control:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.grok-mission-control.terminal
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.grok-mission-control.terminal.plist
+launchctl kickstart -k gui/$(id -u)/com.mission-control.terminal
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.mission-control.terminal.plist
 ```
 
 ## Launcher Direction
@@ -64,18 +62,18 @@ The browser page should stay a terminal surface. Workspace/app selection is movi
 
 - Ratatui launcher crate: `terminal/launcher-ratatui`
 - Install command: `bun run terminal:launcher:install`
-- Installed command: `~/.grok-mission-control/bin/mc`
+- Installed command: `$MC_DATA_DIR/bin/mc` (default `~/.mission-control/bin/mc`)
 - Dev fallback path: `terminal/launcher-ratatui/target/release/mc`
 - The PTY broker automatically starts the installed binary when it exists.
 - If the binary is missing, the broker falls back to the normal login shell.
 - Set `GROK_TERMINAL_USE_LAUNCHER=0` to force shell-first behavior.
 
-The TUI scans `~/dev`, shows repos centered in the terminal, and supports keyboard and mouse input through terminal events. App choices: **Grok**, **Codex**, **Pi**, **Claude**, **Amp**, **Devin**, **Droid**, and **Shell** (keys `1`–`8`, or Tab).
+The TUI scans `MC_WORKSPACE_ROOT` (default `~/dev` or `$HOME`), shows repos centered in the terminal, and supports keyboard and mouse input through terminal events. App choices: **Grok**, **Codex**, **Pi**, **Claude**, **Amp**, **Devin**, **Droid**, and **Shell** (keys `1`–`8`, or Tab). Missing CLIs are dimmed.
 
 Workspace selection is ordered by recent use. Each launch writes the selected cwd to:
 
 ```text
-~/.grok-mission-control/recent-workspaces.txt
+$MC_DATA_DIR/recent-workspaces.txt
 ```
 
 Typing normal characters filters workspace names and paths live. `Backspace` edits the filter, and `Esc` clears the filter before closing the launcher. From a shell, run `mc` to open Mission Control again.
