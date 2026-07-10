@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Something broken in Launchpad / the terminal pad
+about: Something broken in T-0 / the terminal pad
 title: ''
 labels: bug
 assignees: ''

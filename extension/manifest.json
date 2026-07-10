@@ -1,16 +1,19 @@
 {
   "manifest_version": 3,
   "name": "T-0",
-  "version": "0.2.0",
-  "description": "T-0 — real terminal as a browser tab (xterm.js + local PTY). Pick a workspace, launch an agent.",
+  "version": "0.2.1",
+  "description": "T-0 — open the local browser terminal (http://127.0.0.1:4321) as your new tab.",
   "chrome_url_overrides": {
     "newtab": "newtab.html"
   },
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["tabs", "scripting", "storage"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": ["tabs"],
+  "host_permissions": [
+    "http://127.0.0.1:4321/*",
+    "http://localhost:4321/*"
+  ],
   "action": {
     "default_title": "Open T-0"
   }

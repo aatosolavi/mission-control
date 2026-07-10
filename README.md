@@ -14,10 +14,6 @@ Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Cursor, 
   <img src="docs/assets/launchpad.png" alt="T-0 workspace and agent picker" width="900" />
 </p>
 
-<p align="center">
-  <img src="docs/assets/launchpad-tabs.png" alt="T-0 browser tabs with agent session" width="900" />
-</p>
-
 ## Install (macOS)
 
 ### One-liner
@@ -76,7 +72,7 @@ bun run terminal
 | 8 | Droid |
 | 9 | Shell |
 
-Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) to **install** it — a progress bar appears under the panel. From any shell: run `mc` again.
+Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) to **install** npm-backed agents (Codex, Claude, Pi) — a progress bar appears under the panel. Script-based installers need `MC_ALLOW_SCRIPT_INSTALL=1`. From any shell: run `mc` again.
 
 **Memory**
 - Last agent per workspace (auto-select on highlight)

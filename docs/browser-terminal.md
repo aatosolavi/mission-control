@@ -56,9 +56,9 @@ launchctl kickstart -k gui/$(id -u)/com.mission-control.terminal
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.mission-control.terminal.plist
 ```
 
-## Launcher Direction
+## Launcher
 
-The browser page should stay a terminal surface. Workspace/app selection is moving into a native TUI that runs inside the PTY:
+The browser page stays a terminal surface. Workspace/app selection lives in a native TUI that runs inside the PTY:
 
 - Ratatui launcher crate: `terminal/launcher-ratatui`
 - Install command: `bun run terminal:launcher:install`

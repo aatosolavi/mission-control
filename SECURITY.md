@@ -4,26 +4,38 @@ T-0 is a **local full shell** in the browser.
 
 ## Threat model
 
-- Anyone who can open `http://127.0.0.1:4321` and talk to the PTY broker can run commands **as your user**.
-- That is intentional for a personal terminal — treat the ports like an unlocked terminal window.
+- Anyone who can use the HTML UI **and** the PTY WebSocket as your user can run commands **as your user**.
+- Treat ports **4321/4322** like an unlocked terminal window.
 
-## Defaults
+## Defaults (keep these)
 
-- HTML and PTY services bind to **127.0.0.1** only (not LAN). Override only via `MC_BIND_HOST` if you know what you are doing.
-- Do **not** reverse-proxy these ports to the public internet without authentication and a clear threat model.
-- Do **not** open firewall holes for 4321/4322.
+| Control | Behavior |
+|---|---|
+| Bind | HTML + PTY default to **127.0.0.1** only |
+| Remote bind | Refused unless `MC_ALLOW_REMOTE_BIND=1` |
+| PTY WebSocket | **Origin allowlist** — only local UI origins (`http://127.0.0.1:4321`, `http://localhost:4321`, plus `MC_ALLOWED_ORIGINS`) |
+| No-Origin clients | Denied unless `MC_ALLOW_NO_ORIGIN=1` |
+| Attachments | Sanitized basenames, reject `.`/`..`, max count/size |
+| Agent install | Default **npm packages only**; `curl \| bash` recipes need `MC_ALLOW_SCRIPT_INSTALL=1` |
 
-## Quick self-check (maintainers / before release)
+## Cross-site WebSocket (CSWSH)
 
-- [ ] Default bind is localhost (`terminal/server.ts`, `terminal/pty-server.mjs`, LaunchAgent)
-- [ ] No API keys, tokens, or private absolute home paths in tracked source
-- [ ] Attachment filenames are sanitized before write
-- [ ] Logs stay under the data dir, not committed
+Browsers can open websockets to localhost from *other* websites. Without Origin checks, a malicious page could talk to the PTY broker.
+
+Mitigation in T-0: reject connections whose `Origin` is not on the allowlist.
+
+## CDN note
+
+The terminal page currently loads **xterm.js from esm.sh** (and optional Google Fonts). A compromised CDN is a supply-chain risk for a full shell. Vendoring xterm for offline/same-origin is a recommended follow-up.
+
+## Quick self-check
+
+- [x] Default bind is localhost
+- [x] PTY Origin allowlist
+- [x] No API keys / private home paths in tracked source
+- [x] Attachment name sanitize + size limits
+- [x] Install hover does not silently run unpinned curl scripts by default
 
 ## Reporting
 
-If you find a vulnerability (for example remote bind regressions, path traversal in attachments, or session isolation bugs), open a private security advisory on the GitHub repo or contact the maintainer via GitHub.
-
-## Attachments
-
-Dropped files are written under the data directory (`~/.mission-control/attachments` or legacy `~/.grok-mission-control/attachments`). Paths are returned to the PTY for you to use; treat untrusted drops carefully.
+Open a private security advisory on the GitHub repo or contact the maintainer via GitHub.

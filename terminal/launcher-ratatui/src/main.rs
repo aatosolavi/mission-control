@@ -1522,37 +1522,28 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App) {
 }
 
 /// Known install recipes for missing agent CLIs (run via `sh -lc`).
+/// Default: only **pinned npm global packages** (no silent curl|bash).
+/// Script installs require `MC_ALLOW_SCRIPT_INSTALL=1`.
 fn install_recipe(action: Action) -> Option<String> {
+    let allow_scripts = env::var("MC_ALLOW_SCRIPT_INSTALL")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        })
+        .unwrap_or(false);
+
     match action {
         Action::Codex => Some("npm install -g @openai/codex".into()),
         Action::Claude => Some("npm install -g @anthropic-ai/claude-code".into()),
         Action::Pi => Some("npm install -g @earendil-works/pi-coding-agent".into()),
-        Action::Cursor => {
-            // Official Cursor Agent CLI install (when available).
-            Some(
-                "curl -fsSL https://cursor.com/install | bash || npm install -g @cursor/agent 2>/dev/null || true; command -v agent || command -v cursor-agent"
-                    .into(),
-            )
+        Action::Cursor if allow_scripts => Some(
+            "curl -fsSL https://cursor.com/install | bash"
+                .into(),
+        ),
+        Action::Grok if allow_scripts => {
+            Some("curl -fsSL https://x.ai/install.sh | bash".into())
         }
-        Action::Grok => {
-            // Grok CLI is often installed via the official script when present.
-            Some(
-                "curl -fsSL https://x.ai/install.sh | bash 2>/dev/null || curl -fsSL https://install.x.ai | bash 2>/dev/null || echo 'install grok manually from docs.x.ai'"
-                    .into(),
-            )
-        }
-        Action::Amp => Some(
-            "curl -fsSL https://ampcode.com/install.sh | bash 2>/dev/null || npm install -g @sourcegraph/amp 2>/dev/null || echo 'install amp manually'"
-                .into(),
-        ),
-        Action::Devin => Some(
-            "curl -fsSL https://cli.devin.ai/install.sh | bash 2>/dev/null || echo 'install devin manually from docs'"
-                .into(),
-        ),
-        Action::Droid => Some(
-            "curl -fsSL https://app.factory.ai/cli | bash 2>/dev/null || echo 'install droid/factory cli manually'"
-                .into(),
-        ),
+        Action::Amp | Action::Devin | Action::Droid | Action::Cursor | Action::Grok => None,
         Action::Shell => None,
     }
 }
@@ -1985,22 +1976,22 @@ fn copy_path_to_clipboard(path: &Path) -> Result<(), String> {
 /// Note: `~/.local/bin/cursor` is often an **agent shim**, not the IDE — we use `open -a`.
 fn open_in_editor(path: &Path, preferred_ide: Option<&str>) -> Result<String, String> {
     let path_str = path.display().to_string();
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
-    // 1) Explicit editor command env (highest priority).
+    // 1) Explicit editor command env (argv only — no shell interpolation of path).
     for key in ["MC_EDITOR", "VISUAL", "EDITOR"] {
         if let Ok(cmd) = env::var(key) {
             let cmd = cmd.trim();
             if cmd.is_empty() {
                 continue;
             }
-            let script = format!("{cmd} '{path_str}'");
-            if Command::new(&shell)
-                .args(["-lc", &script])
-                .spawn()
-                .is_ok()
-            {
-                return Ok(cmd.to_string());
+            let mut parts = cmd.split_whitespace();
+            let Some(bin) = parts.next() else {
+                continue;
+            };
+            let mut args: Vec<String> = parts.map(|s| s.to_string()).collect();
+            args.push(path_str.clone());
+            if Command::new(bin).args(&args).spawn().is_ok() {
+                return Ok(bin.to_string());
             }
         }
     }

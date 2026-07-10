@@ -17,8 +17,23 @@ import process from "node:process";
 import { WebSocketServer } from "ws";
 import { dataDir } from "./data-dir.mjs";
 
-const PORT = Number(process.env.PORT || 4322);
+const PORT = Number(process.env.MC_PTY_PORT || process.env.PORT || 4322);
 const HOST = process.env.MC_BIND_HOST || "127.0.0.1";
+const HTML_PORT = Number(process.env.MC_HTML_PORT || 4321);
+// Browsers can open websockets to localhost from remote pages (CSWSH).
+// Only allow Origins that match the local HTML UI unless MC_ALLOW_NO_ORIGIN=1.
+const ALLOWED_ORIGINS = new Set(
+  (process.env.MC_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .concat([
+      `http://127.0.0.1:${HTML_PORT}`,
+      `http://localhost:${HTML_PORT}`,
+      "http://127.0.0.1:4321",
+      "http://localhost:4321",
+    ]),
+);
 const SHELL = process.env.SHELL || (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
 const HOME = process.env.HOME || process.cwd();
 const DATA_DIR = dataDir(HOME);
@@ -74,16 +89,36 @@ const SESSION_HISTORY_LIMIT = Number(
 
 const sessions = new Map();
 
+if (HOST !== "127.0.0.1" && HOST !== "localhost" && HOST !== "::1") {
+  if (process.env.MC_ALLOW_REMOTE_BIND !== "1") {
+    console.error(
+      `[PTY Broker] Refusing bind host ${HOST}. Use 127.0.0.1 or set MC_ALLOW_REMOTE_BIND=1 (dangerous).`,
+    );
+    process.exit(78);
+  }
+  console.warn(`[PTY Broker] WARNING: binding PTY to ${HOST} — full shell may be network-reachable.`);
+}
+
 const wss = new WebSocketServer({ host: HOST, port: PORT });
 
 console.log(`[PTY Broker] Running under Node ${process.version} (this is required for stable PTY)`);
 console.log(`[PTY Broker] Data dir: ${DATA_DIR}`);
 console.log(`[PTY Broker] Real shells are available on ws://${HOST}:${PORT}`);
-console.log(`[PTY Broker] Open http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:4321 in your browser to use the terminal.`);
+console.log(
+  `[PTY Broker] Open http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${HTML_PORT} in your browser to use the terminal.`,
+);
 if (LAUNCHER_ENABLED) {
   console.log(`[PTY Broker] Ratatui launcher enabled: ${LAUNCHER_PATH}`);
 } else {
   console.log(`[PTY Broker] Ratatui launcher unavailable; falling back to ${SHELL}`);
+}
+
+function originAllowed(origin) {
+  if (!origin) {
+    // Non-browser clients omit Origin. Default deny; opt in for local tools.
+    return process.env.MC_ALLOW_NO_ORIGIN === "1";
+  }
+  return ALLOWED_ORIGINS.has(origin);
 }
 
 function isDirectory(path) {
@@ -334,8 +369,19 @@ function spawnPtyForSession(session, cols, rows, requestedCwd) {
   }
 }
 
-wss.on("connection", (ws) => {
-  console.log("[PTY Broker] New client connected");
+wss.on("connection", (ws, req) => {
+  const origin = req.headers.origin;
+  if (!originAllowed(origin)) {
+    console.warn(`[PTY Broker] Rejected connection origin=${origin || "(none)"}`);
+    try {
+      ws.close(1008, "origin not allowed");
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  console.log(`[PTY Broker] New client connected origin=${origin || "(none)"}`);
 
   let session = null;
   let startRequested = false;

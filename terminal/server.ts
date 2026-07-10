@@ -30,8 +30,10 @@ import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
-const PORT = Number(process.env.PORT || 4321);
+const PORT = Number(process.env.MC_HTML_PORT || process.env.PORT || 4321);
 const HOST = process.env.MC_BIND_HOST || "127.0.0.1";
+const MAX_ATTACHMENTS = Number(process.env.MC_MAX_ATTACHMENTS || 20);
+const MAX_ATTACHMENT_BYTES = Number(process.env.MC_MAX_ATTACHMENT_BYTES || 25 * 1024 * 1024);
 const currentDir = dirname(fileURLToPath(import.meta.url));
 
 function resolveDataDir(): string {
@@ -55,11 +57,15 @@ function getHtml(): string {
 }
 
 function sanitizeFileName(name: string): string {
-  const cleaned = name
+  const base = name.split(/[/\\]/).pop() || "attachment";
+  const cleaned = base
     .normalize("NFKD")
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return cleaned || "attachment";
+  if (!cleaned || cleaned === "." || cleaned === "..") {
+    return "attachment";
+  }
+  return cleaned.slice(0, 180);
 }
 
 function attachmentDir(): string {
@@ -68,6 +74,16 @@ function attachmentDir(): string {
   const dir = join(resolveDataDir(), "attachments", `${stamp}-${random}`);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+if (HOST !== "127.0.0.1" && HOST !== "localhost" && HOST !== "::1") {
+  if (process.env.MC_ALLOW_REMOTE_BIND !== "1") {
+    console.error(
+      `[T-0] Refusing bind host ${HOST}. Use 127.0.0.1 or set MC_ALLOW_REMOTE_BIND=1 (dangerous).`,
+    );
+    process.exit(78);
+  }
+  console.warn(`[T-0] WARNING: binding HTML server to ${HOST}`);
 }
 
 const server = Bun.serve({
@@ -86,12 +102,28 @@ const server = Bun.serve({
       if (files.length === 0) {
         return Response.json({ error: "No files uploaded" }, { status: 400 });
       }
+      if (files.length > MAX_ATTACHMENTS) {
+        return Response.json(
+          { error: `Too many files (max ${MAX_ATTACHMENTS})` },
+          { status: 400 },
+        );
+      }
 
       const dir = attachmentDir();
       const paths: string[] = [];
 
       for (const file of files) {
-        const path = join(dir, sanitizeFileName(file.name));
+        if (typeof file.size === "number" && file.size > MAX_ATTACHMENT_BYTES) {
+          return Response.json(
+            { error: `File too large (max ${MAX_ATTACHMENT_BYTES} bytes)` },
+            { status: 400 },
+          );
+        }
+        const safeName = sanitizeFileName(file.name);
+        const path = resolve(join(dir, safeName));
+        if (!path.startsWith(resolve(dir) + "/") && path !== resolve(dir)) {
+          return Response.json({ error: "Invalid file name" }, { status: 400 });
+        }
         await Bun.write(path, file);
         paths.push(path);
       }
