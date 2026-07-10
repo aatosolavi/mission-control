@@ -59,11 +59,12 @@ bun run terminal
 | 1 | Grok |
 | 2 | Codex |
 | 3 | Pi |
-| 4 | Claude |
-| 5 | Amp |
-| 6 | Devin |
-| 7 | Droid |
-| 8 | Shell |
+| 4 | Cursor (agent CLI) |
+| 5 | Claude |
+| 6 | Amp |
+| 7 | Devin |
+| 8 | Droid |
+| 9 | Shell |
 
 Missing CLIs are **dimmed**. From any shell: run `mc` again.
 
@@ -72,9 +73,19 @@ Missing CLIs are **dimmed**. From any shell: run `mc` again.
 - **`space`** (empty filter) toggles **favorite** — favorites float to the top (`★`)
 - **`.`** (empty filter) **continues last** workspace + agent
 
-**Side actions** (filter empty): **`e`** editor · **`f`** Finder · **`c`** copy path · **`g`** GitHub  
+**Side actions** (filter empty):
 
-**Git rows:** branch name, `*` if dirty, `↑N` if ahead of upstream; remembered agent shown on the row.
+| Key | Does |
+|-----|------|
+| **`e`** | Open the **folder in Cursor/IDE** (`open -a Cursor`) — not the agent |
+| **`f`** | Reveal in Finder |
+| **`c`** | Copy path |
+| **`g`** | Open GitHub origin |
+| **`s`** | Settings (splash on/off, default agent) |
+
+**Git rows:** branch, `*` dirty, `↑N` ahead; remembered agent on the row.
+
+> Note: the `cursor` shell shim on many machines is for **Cursor Agent**, not the IDE. Mission Control opens **Cursor.app** for `e`, and launches **`agent`** for the Cursor app chip.
 
 ### Themes
 

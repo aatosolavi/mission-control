@@ -26,6 +26,8 @@ NODE_BIN="$(command -v node)"
 CODEX_BIN="$(command -v codex || true)"
 GROK_BIN="$(command -v grok || true)"
 PI_BIN="$(command -v pi || true)"
+# Cursor Agent CLI is `agent` / `cursor-agent` (not the IDE shim named `cursor`)
+CURSOR_BIN="$(command -v agent || command -v cursor-agent || true)"
 CLAUDE_BIN="$(command -v claude || true)"
 AMP_BIN="$(command -v amp || true)"
 DEVIN_BIN="$(command -v devin || true)"
@@ -94,6 +96,9 @@ cat > "$PLIST" <<PLIST
 
     <key>GROK_TERMINAL_PI_COMMAND</key>
     <string>${PI_BIN:-pi}</string>
+
+    <key>GROK_TERMINAL_CURSOR_COMMAND</key>
+    <string>${CURSOR_BIN:-agent}</string>
 
     <key>GROK_TERMINAL_CLAUDE_COMMAND</key>
     <string>${CLAUDE_BIN:-claude}</string>

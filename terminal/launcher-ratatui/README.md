@@ -37,18 +37,20 @@ Cold-start splash (once per `mc` process, skipped when returning from an agent).
 - `1`: Grok
 - `2`: Codex
 - `3`: Pi
-- `4`: Claude
-- `5`: Amp
-- `6`: Devin
-- `7`: Droid
-- `8`: Shell
+- `4`: Cursor (runs `agent` / cursor-agent CLI)
+- `5`: Claude
+- `6`: Amp
+- `7`: Devin
+- `8`: Droid
+- `9`: Shell
 - `enter`: open
 - `.` (filter empty): continue last workspace + agent
 - `space` (filter empty): toggle favorite (`★` at top)
-- `e` (filter empty): open in editor
+- `e` (filter empty): open folder in **Cursor.app / IDE** (not the agent)
 - `f` (filter empty): open in Finder
 - `c` (filter empty): copy path
 - `g` (filter empty): open GitHub / origin remote
+- `s` (filter empty): settings (splash, default agent)
 - rows show git branch (`*` dirty, `↑N` ahead) and remembered agent
 - mouse wheel: move through workspaces
 - click an app name: choose app

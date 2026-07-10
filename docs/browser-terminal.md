@@ -90,10 +90,13 @@ List order: **favorites → recents → last cwd → root scan**.
 
 | Key | Action |
 |---|---|
-| `e` | Open workspace in editor (`MC_EDITOR` / `VISUAL` / `EDITOR`, then cursor/code/…) |
+| `e` | Open workspace **folder in IDE** (`open -a Cursor` when Cursor.app exists; not the agent CLI) |
 | `f` | Reveal in Finder (`open`) |
 | `c` | Copy absolute path (`pbcopy`) |
 | `g` | Open `origin` remote in the browser (GitHub-style URLs) |
+| `s` | Settings — splash on/off, default agent |
+
+App chip **Cursor** launches the **Cursor Agent** CLI (`agent` / `cursor-agent`). The shell command `cursor` on many installs is only a shim and does not open the IDE.
 
 ### Git row metadata
 

@@ -54,6 +54,7 @@ enum Action {
     Grok,
     Codex,
     Pi,
+    Cursor,
     Claude,
     Amp,
     Devin,
@@ -67,6 +68,7 @@ impl Action {
             Action::Grok,
             Action::Codex,
             Action::Pi,
+            Action::Cursor,
             Action::Claude,
             Action::Amp,
             Action::Devin,
@@ -80,6 +82,7 @@ impl Action {
             Action::Grok => "grok",
             Action::Codex => "codex",
             Action::Pi => "pi",
+            Action::Cursor => "cursor",
             Action::Claude => "claude",
             Action::Amp => "amp",
             Action::Devin => "devin",
@@ -93,6 +96,7 @@ impl Action {
             "grok" => Some(Action::Grok),
             "codex" => Some(Action::Codex),
             "pi" => Some(Action::Pi),
+            "cursor" => Some(Action::Cursor),
             "claude" => Some(Action::Claude),
             "amp" => Some(Action::Amp),
             "devin" => Some(Action::Devin),
@@ -107,6 +111,7 @@ impl Action {
             Action::Grok => "Grok",
             Action::Codex => "Codex",
             Action::Pi => "Pi",
+            Action::Cursor => "Cursor",
             Action::Claude => "Claude",
             Action::Amp => "Amp",
             Action::Devin => "Devin",
@@ -121,6 +126,7 @@ impl Action {
             Action::Grok => Some("GROK_TERMINAL_GROK_COMMAND"),
             Action::Codex => Some("GROK_TERMINAL_CODEX_COMMAND"),
             Action::Pi => Some("GROK_TERMINAL_PI_COMMAND"),
+            Action::Cursor => Some("GROK_TERMINAL_CURSOR_COMMAND"),
             Action::Claude => Some("GROK_TERMINAL_CLAUDE_COMMAND"),
             Action::Amp => Some("GROK_TERMINAL_AMP_COMMAND"),
             Action::Devin => Some("GROK_TERMINAL_DEVIN_COMMAND"),
@@ -134,6 +140,8 @@ impl Action {
             Action::Grok => Some("grok"),
             Action::Codex => Some("codex"),
             Action::Pi => Some("pi"),
+            // Cursor Agent CLI (`agent` / `cursor-agent`), not the IDE shim named `cursor`.
+            Action::Cursor => Some("agent"),
             Action::Claude => Some("claude"),
             Action::Amp => Some("amp"),
             Action::Devin => Some("devin"),
@@ -143,8 +151,23 @@ impl Action {
 
     fn resolve_command(self) -> Option<String> {
         let key = self.env_command_key()?;
+        if let Ok(value) = env::var(key) {
+            if !value.trim().is_empty() {
+                return Some(value);
+            }
+        }
+        // Cursor: prefer `agent`, then `cursor-agent` (the IDE `cursor` shim is not the agent).
+        if self == Action::Cursor {
+            if command_available("agent") {
+                return Some("agent".into());
+            }
+            if command_available("cursor-agent") {
+                return Some("cursor-agent".into());
+            }
+            return Some("agent".into());
+        }
         let default = self.default_command()?;
-        Some(env::var(key).unwrap_or_else(|_| default.to_string()))
+        Some(default.to_string())
     }
 
     fn is_available(self) -> bool {
@@ -185,6 +208,28 @@ struct LastLaunch {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct SettingsFile {
+    #[serde(default = "default_true")]
+    splash: bool,
+    /// Action id, e.g. "grok", "cursor", "pi"
+    #[serde(default)]
+    default_agent: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for SettingsFile {
+    fn default() -> Self {
+        Self {
+            splash: true,
+            default_agent: None,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct LauncherStateFile {
     version: u32,
     #[serde(default)]
@@ -193,6 +238,8 @@ struct LauncherStateFile {
     favorites: Vec<String>,
     #[serde(default)]
     agents: HashMap<String, String>,
+    #[serde(default)]
+    settings: SettingsFile,
 }
 
 impl Default for LauncherStateFile {
@@ -202,6 +249,7 @@ impl Default for LauncherStateFile {
             last: None,
             favorites: Vec::new(),
             agents: HashMap::new(),
+            settings: SettingsFile::default(),
         }
     }
 }
@@ -211,6 +259,7 @@ struct LauncherState {
     last: Option<(PathBuf, Action)>,
     favorites: Vec<PathBuf>,
     agents: HashMap<PathBuf, Action>,
+    settings: SettingsFile,
 }
 
 impl LauncherState {
@@ -259,6 +308,7 @@ impl LauncherState {
             last,
             favorites,
             agents,
+            settings: file.settings,
         }
     }
 
@@ -296,11 +346,21 @@ impl LauncherState {
             last,
             favorites,
             agents,
+            settings: self.settings.clone(),
         };
 
         if let Ok(json) = serde_json::to_string_pretty(&file) {
             let _ = fs::write(launcher_state_path(), format!("{json}\n"));
         }
+    }
+
+    fn default_action(&self) -> Action {
+        self.settings
+            .default_agent
+            .as_deref()
+            .and_then(Action::from_id)
+            .map(|a| a.resolve_available())
+            .unwrap_or_else(Action::first_available)
     }
 
     fn remember_launch(&mut self, cwd: &Path, action: Action) {
@@ -357,6 +417,12 @@ struct UiHitboxes {
     list_height: u16,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Picker,
+    Settings,
+}
+
 struct App {
     state: LauncherState,
     repos: Vec<Repo>,
@@ -368,6 +434,8 @@ struct App {
     hitboxes: UiHitboxes,
     /// Ephemeral footer flash for side actions (copy, open, errors).
     status: Option<String>,
+    screen: Screen,
+    settings_selected: usize,
 }
 
 impl App {
@@ -375,19 +443,26 @@ impl App {
         let state = LauncherState::load();
         let repos = discover_repos(&state);
         let visible_repos = (0..repos.len()).collect();
+        let default_action = state.default_action();
         let mut app = Self {
             state,
             repos,
             visible_repos,
             selected_visible: 0,
-            selected_action: Action::first_available(),
+            selected_action: default_action,
             filter: String::new(),
             offset: 0,
             hitboxes: UiHitboxes::default(),
             status: None,
+            screen: Screen::Picker,
+            settings_selected: 0,
         };
         app.apply_agent_memory();
         app
+    }
+
+    fn settings_item_count() -> usize {
+        4 // splash, default agent, data dir (ro), workspace root (ro)
     }
 
     fn set_status(&mut self, message: impl Into<String>) {
@@ -417,6 +492,51 @@ impl App {
         };
         if let Some(action) = self.state.agent_for(&repo.path) {
             self.selected_action = action.resolve_available();
+        } else {
+            self.selected_action = self.state.default_action();
+        }
+    }
+
+    fn toggle_settings_item(&mut self) {
+        match self.settings_selected {
+            0 => {
+                self.state.settings.splash = !self.state.settings.splash;
+                self.state.save();
+                self.set_status(if self.state.settings.splash {
+                    "splash: on (cold start)"
+                } else {
+                    "splash: off"
+                });
+            }
+            1 => {
+                // Cycle default agent through available actions (skip Shell as default unless only one).
+                let actions: Vec<Action> = Action::all()
+                    .iter()
+                    .copied()
+                    .filter(|a| *a != Action::Shell && a.is_available())
+                    .collect();
+                if actions.is_empty() {
+                    self.set_status("no agents available");
+                    return;
+                }
+                let current = self
+                    .state
+                    .settings
+                    .default_agent
+                    .as_deref()
+                    .and_then(Action::from_id)
+                    .unwrap_or(actions[0]);
+                let idx = actions
+                    .iter()
+                    .position(|a| *a == current)
+                    .map(|i| (i + 1) % actions.len())
+                    .unwrap_or(0);
+                let next = actions[idx];
+                self.state.settings.default_agent = Some(next.id().to_string());
+                self.state.save();
+                self.set_status(format!("default agent: {}", next.label()));
+            }
+            _ => {}
         }
     }
 
@@ -610,15 +730,13 @@ fn main() -> io::Result<()> {
     }
 }
 
-/// Splash runs unless MC_SPLASH is 0 / off / false.
+/// Splash: env MC_SPLASH wins; else launcher-state settings.splash (default on).
 fn splash_enabled() -> bool {
-    match env::var("MC_SPLASH") {
-        Ok(value) => {
-            let v = value.trim().to_ascii_lowercase();
-            !(v == "0" || v == "off" || v == "false" || v == "no")
-        }
-        Err(_) => true,
+    if let Ok(value) = env::var("MC_SPLASH") {
+        let v = value.trim().to_ascii_lowercase();
+        return !(v == "0" || v == "off" || v == "false" || v == "no");
     }
+    LauncherState::load().settings.splash
 }
 
 const SPLASH_TOTAL_MS: u64 = 750;
@@ -755,14 +873,39 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut app = App::new();
 
     loop {
-        terminal.draw(|frame| draw(frame, &mut app))?;
+        terminal.draw(|frame| match app.screen {
+            Screen::Picker => draw(frame, &mut app),
+            Screen::Settings => draw_settings(frame, &mut app),
+        })?;
 
         if !event::poll(Duration::from_millis(250))? {
             continue;
         }
 
         match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if app.screen == Screen::Settings {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('s') | KeyCode::Char('S') => {
+                            app.screen = Screen::Picker;
+                            app.clear_status();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.settings_selected = (app.settings_selected + 1)
+                                .min(App::settings_item_count().saturating_sub(1));
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.settings_selected = app.settings_selected.saturating_sub(1);
+                        }
+                        KeyCode::Enter | KeyCode::Right | KeyCode::Left | KeyCode::Char(' ') => {
+                            app.toggle_settings_item();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                match key.code {
                 KeyCode::Esc => {
                     if app.filter.is_empty() {
                         return Ok(None);
@@ -780,7 +923,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 KeyCode::Up => app.select_previous_repo(),
                 KeyCode::Right | KeyCode::Tab => app.select_next_action(),
                 KeyCode::Left | KeyCode::BackTab => app.select_previous_action(),
-                KeyCode::Char(value @ '1'..='8') => {
+                KeyCode::Char(value @ '1'..='9') => {
                     app.select_action_by_number(value.to_digit(10).unwrap_or(0) as u8);
                 }
                 KeyCode::Char(' ') if app.filter.is_empty() => {
@@ -794,6 +937,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         return Ok(Some(launch));
                     }
                     app.set_status("no last session — open something with enter first");
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') if app.filter.is_empty() => {
+                    app.screen = Screen::Settings;
+                    app.settings_selected = 0;
+                    app.clear_status();
                 }
                 KeyCode::Char('e') | KeyCode::Char('E') if app.filter.is_empty() => {
                     app.run_side_action(SideAction::Editor);
@@ -812,8 +960,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     app.push_filter_char(value);
                 }
                 _ => {}
-            },
-            Event::Mouse(mouse) => match mouse.kind {
+            }
+            }
+            Event::Mouse(mouse) if app.screen == Screen::Picker => match mouse.kind {
                 MouseEventKind::ScrollDown => app.select_next_repo(),
                 MouseEventKind::ScrollUp => app.select_previous_repo(),
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -902,14 +1051,94 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Span::styled(" cont  ", Style::default().fg(Color::DarkGray)),
             Span::styled("space", Style::default().fg(Color::White)),
             Span::styled(" fav  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("1-8", Style::default().fg(Color::White)),
+            Span::styled("1-9", Style::default().fg(Color::White)),
             Span::styled(" app  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("s", Style::default().fg(Color::White)),
+            Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
             Span::styled("type", Style::default().fg(Color::White)),
             Span::styled(" filter", Style::default().fg(Color::DarkGray)),
         ]),
         footer_second,
     ]);
     frame.render_widget(footer, chunks[4]);
+}
+
+fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
+    let area = centered_rect(frame.area());
+    let block = Block::default()
+        .title(" Mission Control · Settings ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(block, area);
+
+    let inner = inset(area, 2, 1);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "enter/space toggle · esc/s back",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        chunks[0],
+    );
+
+    let splash = if app.state.settings.splash {
+        "on"
+    } else {
+        "off"
+    };
+    let default_agent = app
+        .state
+        .settings
+        .default_agent
+        .as_deref()
+        .and_then(Action::from_id)
+        .map(|a| a.label())
+        .unwrap_or("auto (first available)");
+
+    let rows = [
+        format!("Splash (cold start)     {splash}"),
+        format!("Default agent           {default_agent}"),
+        format!("Data dir                {}", display_path(&data_dir())),
+        format!("Workspace root          {}", display_path(&workspace_root())),
+    ];
+
+    let mut lines = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let selected = i == app.settings_selected;
+        let style = if selected {
+            Style::default()
+                .fg(ACCENT_ON)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else if i >= 2 {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let marker = if selected { ">" } else { " " };
+        lines.push(Line::from(Span::styled(format!("{marker} {row}"), style)));
+    }
+    frame.render_widget(Paragraph::new(lines), chunks[1]);
+
+    let hint = app
+        .status
+        .clone()
+        .unwrap_or_else(|| "e opens the folder in Cursor/IDE — not the Cursor agent".into());
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(ACCENT),
+        ))),
+        chunks[2],
+    );
 }
 
 fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -924,7 +1153,7 @@ fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             x += 1;
         }
 
-        // Number prefix doubles as the 1–8 keyboard shortcut.
+        // Number prefix doubles as the 1–9 keyboard shortcut.
         // Dim chips when the CLI is missing from PATH.
         let available = action.is_available();
         let label = format!(" {} {} ", index + 1, action.label());
@@ -1247,18 +1476,21 @@ fn copy_path_to_clipboard(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Open the workspace folder in a GUI editor / IDE.
+///
+/// Note: on many machines `~/.local/bin/cursor` is a **shim for Cursor Agent**, not the IDE.
+/// Prefer `open -a Cursor` when Cursor.app is installed.
 fn open_in_editor(path: &Path) -> Result<String, String> {
     let path_str = path.display().to_string();
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
-    // Prefer explicit env (supports multi-word like `cursor -g`). GUI CLIs next.
+    // 1) Explicit editor env (user override).
     for key in ["MC_EDITOR", "VISUAL", "EDITOR"] {
         if let Ok(cmd) = env::var(key) {
             let cmd = cmd.trim();
             if cmd.is_empty() {
                 continue;
             }
-            // Quote path for the shell; leave the command as the user wrote it.
             let script = format!("{cmd} '{path_str}'");
             if Command::new(&shell)
                 .args(["-lc", &script])
@@ -1270,22 +1502,42 @@ fn open_in_editor(path: &Path) -> Result<String, String> {
         }
     }
 
-    for bin in ["cursor", "code", "subl", "zed"] {
+    // 2) macOS app bundles (most reliable for Cursor IDE).
+    let app_candidates = [
+        ("Cursor", "/Applications/Cursor.app"),
+        ("Visual Studio Code", "/Applications/Visual Studio Code.app"),
+        ("Zed", "/Applications/Zed.app"),
+        ("Windsurf", "/Applications/Windsurf.app"),
+    ];
+    for (name, app_path) in app_candidates {
+        if Path::new(app_path).exists() {
+            let status = Command::new("open")
+                .args(["-a", name, &path_str])
+                .status();
+            if matches!(status, Ok(s) if s.success()) {
+                return Ok(name.into());
+            }
+        }
+    }
+
+    // 3) Also try open -a even if we didn't find the path (custom install locations).
+    for name in ["Cursor", "Visual Studio Code", "Zed"] {
+        let status = Command::new("open")
+            .args(["-a", name, &path_str])
+            .status();
+        if matches!(status, Ok(s) if s.success()) {
+            return Ok(name.into());
+        }
+    }
+
+    // 4) GUI CLIs — skip the broken `cursor` agent-shim; use `code` etc.
+    for bin in ["code", "subl", "zed", "windsurf"] {
         if command_available(bin) && Command::new(bin).arg(&path_str).spawn().is_ok() {
             return Ok(bin.into());
         }
     }
 
-    for app in ["Cursor", "Visual Studio Code", "Zed"] {
-        let status = Command::new("open")
-            .args(["-a", app, &path_str])
-            .status();
-        if matches!(status, Ok(s) if s.success()) {
-            return Ok(app.into());
-        }
-    }
-
-    Err("no editor found (set MC_EDITOR or install cursor/code)".into())
+    Err("no IDE found — install Cursor.app or set MC_EDITOR".into())
 }
 
 fn open_github(path: &Path) -> Result<String, String> {

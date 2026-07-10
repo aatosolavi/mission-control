@@ -154,6 +154,11 @@ mc() {
         eval "\$_mc_pi_command"
         return \$?
         ;;
+      cursor)
+        local _mc_cursor_command="\${GROK_TERMINAL_CURSOR_COMMAND:-agent}"
+        eval "\$_mc_cursor_command"
+        return \$?
+        ;;
       claude)
         local _mc_claude_command="\${GROK_TERMINAL_CLAUDE_COMMAND:-claude}"
         eval "\$_mc_claude_command"
