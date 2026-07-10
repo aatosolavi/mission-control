@@ -49,6 +49,7 @@ struct Repo {
 enum Action {
     Grok,
     Codex,
+    Pi,
     Claude,
     Amp,
     Devin,
@@ -61,6 +62,7 @@ impl Action {
         &[
             Action::Grok,
             Action::Codex,
+            Action::Pi,
             Action::Claude,
             Action::Amp,
             Action::Devin,
@@ -73,6 +75,7 @@ impl Action {
         match self {
             Action::Grok => "Grok",
             Action::Codex => "Codex",
+            Action::Pi => "Pi",
             Action::Claude => "Claude",
             Action::Amp => "Amp",
             Action::Devin => "Devin",
@@ -86,6 +89,7 @@ impl Action {
             Action::Shell => None,
             Action::Grok => Some("GROK_TERMINAL_GROK_COMMAND"),
             Action::Codex => Some("GROK_TERMINAL_CODEX_COMMAND"),
+            Action::Pi => Some("GROK_TERMINAL_PI_COMMAND"),
             Action::Claude => Some("GROK_TERMINAL_CLAUDE_COMMAND"),
             Action::Amp => Some("GROK_TERMINAL_AMP_COMMAND"),
             Action::Devin => Some("GROK_TERMINAL_DEVIN_COMMAND"),
@@ -98,6 +102,7 @@ impl Action {
             Action::Shell => None,
             Action::Grok => Some("grok"),
             Action::Codex => Some("codex"),
+            Action::Pi => Some("pi"),
             Action::Claude => Some("claude"),
             Action::Amp => Some("amp"),
             Action::Devin => Some("devin"),
@@ -300,7 +305,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 KeyCode::Up => app.select_previous_repo(),
                 KeyCode::Right | KeyCode::Tab => app.select_next_action(),
                 KeyCode::Left | KeyCode::BackTab => app.select_previous_action(),
-                KeyCode::Char(value @ '1'..='7') => {
+                KeyCode::Char(value @ '1'..='8') => {
                     app.select_action_by_number(value.to_digit(10).unwrap_or(0) as u8);
                 }
                 KeyCode::Char(value) => app.push_filter_char(value),
@@ -381,7 +386,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Line::from(vec![
             Span::styled("enter", Style::default().fg(Color::White)),
             Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("1-7/tab", Style::default().fg(Color::White)),
+            Span::styled("1-8/tab", Style::default().fg(Color::White)),
             Span::styled(" app  ", Style::default().fg(Color::DarkGray)),
             Span::styled("up/down", Style::default().fg(Color::White)),
             Span::styled(" workspace  ", Style::default().fg(Color::DarkGray)),
@@ -410,7 +415,7 @@ fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             x += 1;
         }
 
-        // Number prefix doubles as the 1–7 keyboard shortcut.
+        // Number prefix doubles as the 1–8 keyboard shortcut.
         let label = format!(" {} {} ", index + 1, action.label());
         let width = label.chars().count() as u16;
         let style = if *action == app.selected_action {

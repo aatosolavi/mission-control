@@ -11,6 +11,7 @@ BUN_BIN="$(command -v bun)"
 NODE_BIN="$(command -v node)"
 CODEX_BIN="$(command -v codex || true)"
 GROK_BIN="$(command -v grok || true)"
+PI_BIN="$(command -v pi || true)"
 CLAUDE_BIN="$(command -v claude || true)"
 AMP_BIN="$(command -v amp || true)"
 DEVIN_BIN="$(command -v devin || true)"
@@ -50,6 +51,9 @@ cat > "$PLIST" <<PLIST
 
     <key>GROK_TERMINAL_GROK_COMMAND</key>
     <string>${GROK_BIN:-grok}</string>
+
+    <key>GROK_TERMINAL_PI_COMMAND</key>
+    <string>${PI_BIN:-pi}</string>
 
     <key>GROK_TERMINAL_CLAUDE_COMMAND</key>
     <string>${CLAUDE_BIN:-claude}</string>

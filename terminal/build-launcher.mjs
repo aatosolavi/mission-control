@@ -139,6 +139,11 @@ mc() {
         eval "$_mc_grok_command"
         return $?
         ;;
+      pi)
+        local _mc_pi_command="\${GROK_TERMINAL_PI_COMMAND:-pi}"
+        eval "$_mc_pi_command"
+        return $?
+        ;;
       claude)
         local _mc_claude_command="\${GROK_TERMINAL_CLAUDE_COMMAND:-claude}"
         eval "$_mc_claude_command"

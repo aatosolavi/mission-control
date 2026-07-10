@@ -2,7 +2,7 @@
 
 **A real local terminal in a browser tab** — plus a Finder-style launcher for workspaces and coding agents.
 
-Open http://localhost:4321. You get a full PTY (`zsh` / your `$SHELL`), session resume across reloads, file drop attachments, and `mc`: pick a workspace, pick an agent (Grok, Codex, Claude, Amp, Devin, Droid, or Shell), go.
+Open http://localhost:4321. You get a full PTY (`zsh` / your `$SHELL`), session resume across reloads, file drop attachments, and `mc`: pick a workspace, pick an agent (Grok, Codex, Pi, Claude, Amp, Devin, Droid, or Shell), go.
 
 > **Canonical checkout:** `~/dev/mission-control`  
 > **Data + logs:** `~/.grok-mission-control/`  
@@ -44,7 +44,7 @@ launchctl kickstart -k gui/$(id -u)/com.grok-mission-control.terminal
 ### Launcher (`mc`)
 
 - Filter workspaces under `~/dev` (recents first)
-- Apps: **1** Grok · **2** Codex · **3** Claude · **4** Amp · **5** Devin · **6** Droid · **7** Shell
+- Apps: **1** Grok · **2** Codex · **3** Pi · **4** Claude · **5** Amp · **6** Devin · **7** Droid · **8** Shell
 - From any shell: run `mc` to reopen the picker
 
 ### Themes

@@ -33,24 +33,26 @@ Set `GROK_TERMINAL_USE_LAUNCHER=0` to force the old shell-first behavior.
 - `tab` or `left/right`: choose app
 - `1`: Grok
 - `2`: Codex
-- `3`: Claude
-- `4`: Amp
-- `5`: Devin
-- `6`: Droid
-- `7`: Shell
+- `3`: Pi
+- `4`: Claude
+- `5`: Amp
+- `6`: Devin
+- `7`: Droid
+- `8`: Shell
 - `enter`: open
 - mouse wheel: move through workspaces
 - click an app name: choose app
 - click a workspace once: select
 - click the selected workspace again: open
 
-Shell replaces the launcher. Agent CLIs (Grok, Codex, Claude, Amp, Devin, Droid) run as child apps; when they exit, the launcher opens again. If you open Shell and run an agent manually from there, exiting the agent returns to that shell.
+Shell replaces the launcher. Agent CLIs (Grok, Codex, Pi, Claude, Amp, Devin, Droid) run as child apps; when they exit, the launcher opens again. If you open Shell and run an agent manually from there, exiting the agent returns to that shell.
 
 Commands can be overridden:
 
 ```bash
 GROK_TERMINAL_GROK_COMMAND=grok
 GROK_TERMINAL_CODEX_COMMAND=codex
+GROK_TERMINAL_PI_COMMAND=pi
 GROK_TERMINAL_CLAUDE_COMMAND=claude
 GROK_TERMINAL_AMP_COMMAND=amp
 GROK_TERMINAL_DEVIN_COMMAND=devin
