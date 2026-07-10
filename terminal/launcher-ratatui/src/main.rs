@@ -530,7 +530,8 @@ impl App {
         }
     }
 
-    fn toggle_settings_item(&mut self) {
+    /// `delta` +1 forward, -1 back (wraps). Splash always flips.
+    fn nudge_settings_item(&mut self, delta: i32) {
         match self.settings_selected {
             0 => {
                 self.state.settings.splash = !self.state.settings.splash;
@@ -542,7 +543,6 @@ impl App {
                 });
             }
             1 => {
-                // Cycle default agent through available actions (skip Shell as default unless only one).
                 let actions: Vec<Action> = Action::all()
                     .iter()
                     .copied()
@@ -559,12 +559,10 @@ impl App {
                     .as_deref()
                     .and_then(Action::from_id)
                     .unwrap_or(actions[0]);
-                let idx = actions
-                    .iter()
-                    .position(|a| *a == current)
-                    .map(|i| (i + 1) % actions.len())
-                    .unwrap_or(0);
-                let next = actions[idx];
+                let idx = actions.iter().position(|a| *a == current).unwrap_or(0);
+                let len = actions.len() as i32;
+                let next_idx = (idx as i32 + delta).rem_euclid(len) as usize;
+                let next = actions[next_idx];
                 self.state.settings.default_agent = Some(next.id().to_string());
                 self.state.save();
                 self.set_status(format!("default agent: {}", next.label()));
@@ -579,16 +577,17 @@ impl App {
                 let idx = IDE_OPTIONS
                     .iter()
                     .position(|name| *name == current)
-                    .map(|i| (i + 1) % IDE_OPTIONS.len())
                     .unwrap_or(0);
-                let next = IDE_OPTIONS[idx];
+                let len = IDE_OPTIONS.len() as i32;
+                let next_idx = (idx as i32 + delta).rem_euclid(len) as usize;
+                let next = IDE_OPTIONS[next_idx];
                 self.state.settings.default_ide = if next == "auto" {
                     None
                 } else {
                     Some(next.to_string())
                 };
                 self.state.save();
-                self.set_status(format!("default IDE: {next}"));
+                self.set_status(format!("default ide: {next}"));
             }
             _ => {}
         }
@@ -958,8 +957,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         KeyCode::Up | KeyCode::Char('k') => {
                             app.settings_selected = app.settings_selected.saturating_sub(1);
                         }
-                        KeyCode::Enter | KeyCode::Right | KeyCode::Left | KeyCode::Char(' ') => {
-                            app.toggle_settings_item();
+                        // ← back · → / enter / space forward
+                        KeyCode::Left => app.nudge_settings_item(-1),
+                        KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
+                            app.nudge_settings_item(1);
                         }
                         _ => {}
                     }
@@ -1136,15 +1137,16 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Min(4),
-            Constraint::Length(2),
+            Constraint::Length(1), // help
+            Constraint::Min(4),    // options
+            Constraint::Length(1), // spacer — pushes status one row lower
+            Constraint::Length(1), // status
         ])
         .split(inner);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "enter/space toggle · esc/s back",
+            "←/→ cycle · enter/space next · esc/s back",
             Style::default().fg(Color::DarkGray),
         ))),
         chunks[0],
@@ -1195,15 +1197,16 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
         lines.push(Line::from(Span::styled(format!("{marker} {row}"), style)));
     }
     frame.render_widget(Paragraph::new(lines), chunks[1]);
+    // chunks[2] = empty spacer
 
-    // Only show ephemeral status flashes here (no permanent "e opens…" tip).
+    // Status one row lower than the option list.
     if let Some(status) = &app.status {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 status.clone(),
                 Style::default().fg(ACCENT),
             ))),
-            chunks[2],
+            chunks[3],
         );
     }
 }
