@@ -1,10 +1,10 @@
-# Contributing
+# Contributing to Launchpad
 
-Thanks for helping with Launchpad (repo: mission-control).
+Thanks for helping. This project is intentionally small: a **browser terminal** + **`mc` workspace/agent pad**. Keep that focus.
 
 ## Product rule
 
-Keep the browser page a **terminal surface**. Workspace and agent selection belong in the Ratatui launcher (`mc`), not heavy DOM chrome.
+Keep the browser page a **terminal surface**. Workspace and agent selection belong in the Ratatui launcher (`mc`), not heavy DOM chrome. Do not reintroduce a Next.js dashboard without discussion.
 
 ## Dev setup
 
@@ -26,7 +26,7 @@ bun run terminal:install  # build mc + LaunchAgent
 
 Open http://127.0.0.1:4321
 
-## Rebuild the launcher only
+Rebuild launcher only:
 
 ```bash
 bun run terminal:launcher:build
@@ -39,11 +39,55 @@ bun run terminal:launcher:build
 | `terminal/index.html` | Browser UI (xterm.js) |
 | `terminal/server.ts` | Bun HTML + uploads (:4321) |
 | `terminal/pty-server.mjs` | Node PTY + WebSocket (:4322) |
-| `terminal/launcher-ratatui` | Workspace + agent TUI |
+| `terminal/launcher-ratatui` | Launchpad TUI (`mc`) |
 | `extension/` | Helium/Chrome new-tab redirect |
 
-## PRs
+## Pull requests
 
-- Small, focused diffs
-- Don’t reintroduce a Next.js dashboard without discussion
-- Prefer env config (`MC_*`) over hardcoded personal paths
+- **Small, focused diffs.** One idea per PR when possible.
+- Prefer env/`MC_*` config over hardcoded personal paths.
+- Prefer expanding Ratatui primitives over new web chrome.
+- If you change the PTY stack, document bind host defaults (`127.0.0.1`).
+
+### AI-assisted contributions (read this)
+
+Open source maintainers are drowning in low-quality agent PRs. Launchpad is built *for* tokenmaxxers — that does **not** mean unreviewed agent spam is welcome.
+
+**Allowed**
+
+- Using Claude / Codex / Cursor / Grok / etc. to help write code
+- AI-assisted refactors **you have read and understand**
+- Disclosing AI use in the PR description (appreciated, not shamed)
+
+**Not allowed**
+
+- Autonomous agents opening PRs without a human who owns the change
+- Bulk “drive-by” PRs you have not run or read
+- AI-generated issue spam, drive-by style rewrites, or unsolicited large features
+- Opening PRs solely to farm contribution graphs
+
+**Rules of thumb (what good looks like)**
+
+1. **You own the PR.** You can explain every line if asked.
+2. **You ran it.** At least: build `mc` if touched; open `http://127.0.0.1:4321` if terminal paths changed.
+3. **Self-review before request for review.** No “the agent said it works.”
+4. **Keep PRs reviewable.** Prefer under a few hundred lines unless coordinated.
+5. **No auto-opened PRs** from bots/agents without prior maintainer agreement.
+
+If a PR is clearly unreviewed slop, it may be closed without a long debate. That’s about maintainer time, not ideology.
+
+Inspired by patterns many OSS maintainers are formalizing in 2025–2026 (e.g. Godot’s AI contribution tightening; “if you didn’t read every line, don’t open the PR”).
+
+## Security
+
+This product is a **local shell**. Never change the default bind away from localhost without a clear security discussion. See [SECURITY.md](./SECURITY.md).
+
+## Good first contributions
+
+- Docs / README polish
+- Extra agent chips (if CLI is real and tested)
+- UI polish in `mc` that doesn’t add chrome over the PTY
+- Install / LaunchAgent edge cases on macOS
+- Linux notes (no full systemd product yet unless you ship it)
+
+Open an issue before large features.

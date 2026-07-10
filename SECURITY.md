@@ -9,9 +9,16 @@ Launchpad is a **local full shell** in the browser.
 
 ## Defaults
 
-- HTML and PTY services bind to **127.0.0.1** only (not LAN).
+- HTML and PTY services bind to **127.0.0.1** only (not LAN). Override only via `MC_BIND_HOST` if you know what you are doing.
 - Do **not** reverse-proxy these ports to the public internet without authentication and a clear threat model.
 - Do **not** open firewall holes for 4321/4322.
+
+## Quick self-check (maintainers / before release)
+
+- [ ] Default bind is localhost (`terminal/server.ts`, `terminal/pty-server.mjs`, LaunchAgent)
+- [ ] No API keys, tokens, or private absolute home paths in tracked source
+- [ ] Attachment filenames are sanitized before write
+- [ ] Logs stay under the data dir, not committed
 
 ## Reporting
 

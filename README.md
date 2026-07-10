@@ -1,14 +1,22 @@
 # Launchpad
 
-**A real local terminal in a browser tab** — plus a SpaceX-flavored pad for workspaces and coding agents.
+**A real local terminal in a browser tab** — plus a pad for workspaces and coding agents.
 
 Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Cursor, Grok, Amp, Devin, Droid, or a plain shell.
 
 > All systems go — workspaces in, agents out.
 
-![Launchpad](https://img.shields.io/badge/local--first-orange) ![MIT](https://img.shields.io/badge/license-MIT-blue)
+![Launchpad](https://img.shields.io/badge/local--first-orange) ![MIT](https://img.shields.io/badge/license-MIT-blue) ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
 
-> **Repo / CLI still named `mission-control` / `mc` for continuity.** The product UI is **Launchpad**.
+> **Repo / CLI:** `mission-control` / `mc` · **Product name:** Launchpad
+
+<p align="center">
+  <img src="docs/assets/launchpad.png" alt="Launchpad workspace and agent picker" width="900" />
+</p>
+
+<p align="center">
+  <img src="docs/assets/launchpad-tabs.png" alt="Launchpad browser tabs with agent session" width="900" />
+</p>
 
 ## Install (macOS)
 
@@ -50,11 +58,11 @@ bun run terminal
 |---|---|
 | Browser UI | xterm.js full-page terminal, light/dark/system, orange accent |
 | PTY broker | Real shell over WebSocket on **127.0.0.1:4322** |
-| `mc` launcher | Filter `~/dev` (or `MC_WORKSPACE_ROOT`), pick agent, go |
+| `mc` (Launchpad) | Filter workspaces, pick agent, go |
 | Sessions | Reload reattaches; idle retain across laptop sleep |
 | Helium extension | `extension/` → Cmd+T becomes a terminal |
 
-### Launcher (`mc`)
+### Launchpad keys (`mc`)
 
 | Key | App |
 |-----|-----|
@@ -70,66 +78,59 @@ bun run terminal
 
 Missing CLIs are **dimmed**. From any shell: run `mc` again.
 
-**Memory (tokenmaxxer mode):**
-- Remembers **last agent per workspace** (auto-selects when you highlight a repo)
-- **`space`** (empty filter) toggles **favorite** — favorites float to the top (`★`)
-- **`.`** (empty filter) **continues last** workspace + agent
+**Memory**
+- Last agent per workspace (auto-select on highlight)
+- **`space`** — favorite (`★` floats to top)
+- **`.`** — continue last workspace + agent
 
-**Side actions** (filter empty):
+**Side actions** (filter empty)
 
 | Key | Does |
 |-----|------|
-| **`e`** | Open the **folder in Cursor/IDE** (`open -a Cursor`) — not the agent |
-| **`f`** | Reveal in Finder |
+| **`e`** | Open folder in Cursor/IDE (`open -a Cursor`) |
+| **`f`** | Finder |
 | **`c`** | Copy path |
-| **`g`** | Open GitHub origin |
-| **`s`** | Settings (splash on/off, default agent) |
+| **`g`** | GitHub origin |
+| **`s`** | Settings |
 
-**Git rows:** branch, `*` dirty, `↑N` ahead; remembered agent on the row.
-
-> Note: the `cursor` shell shim on many machines is for **Cursor Agent**, not the IDE. Launchpad opens **Cursor.app** for `e`, and launches **`agent`** for the Cursor app chip.
+**Git rows:** branch · `*` dirty · `↑N` ahead · remembered agent on the row.
 
 ### Themes
 
 - `?theme=light` · `?theme=dark` · `?theme=system`
-- **⌘/Ctrl+Shift+L** cycles (saved in `localStorage`)
+- **⌘/Ctrl+Shift+L** cycles
 
 ### Config (env)
 
 | Variable | Default |
 |---|---|
 | `MC_WORKSPACE_ROOT` | `~/dev` if it exists, else `$HOME` |
-| `MC_DATA_DIR` | `~/.mission-control` (or legacy `~/.grok-mission-control` if present) |
+| `MC_DATA_DIR` | `~/.mission-control` (or legacy `~/.grok-mission-control`) |
 | `MC_BIND_HOST` | `127.0.0.1` |
-| `MC_LAUNCHER` / `GROK_TERMINAL_*_COMMAND` | paths to `mc` and agent CLIs |
-
-Data, logs, attachments, and the `mc` binary live under the data dir.
-
-## Helium / Chrome new tab
-
-1. `chrome://extensions` → Developer mode  
-2. Load unpacked → select `extension/`  
-3. Cmd+T → Launchpad (when the server is running)
+| `MC_SPLASH` | splash on cold start (`0` to disable) |
+| `GROK_TERMINAL_*_COMMAND` | override agent CLI paths |
 
 ## Security
 
-This is a **full shell as your user** on localhost. Do not expose ports 4321/4322 to the network. See [SECURITY.md](./SECURITY.md).
+This is a **full shell as your user**, bound to **localhost only**. Do not expose ports 4321/4322. See [SECURITY.md](./SECURITY.md).
+
+## Contributing
+
+Ideas and PRs welcome — especially if you live in agent CLIs too.
+
+Please read [CONTRIBUTING.md](./CONTRIBUTING.md). Short version: **humans own PRs**; AI help is fine if you reviewed and ran the change. Unreviewed agent spam will be closed.
 
 ## Docs
 
 - [docs/browser-terminal.md](./docs/browser-terminal.md) — PTY notes, sessions, launcher  
-- [CONTRIBUTING.md](./CONTRIBUTING.md) — how to hack  
-- [terminal/launcher-ratatui/README.md](./terminal/launcher-ratatui/README.md) — `mc` keys  
+- [CONTRIBUTING.md](./CONTRIBUTING.md) · [SECURITY.md](./SECURITY.md)  
+- [terminal/launcher-ratatui/README.md](./terminal/launcher-ratatui/README.md) — full key map  
 
 ## Stack
 
 - **xterm.js** (CDN) · **@lydell/node-pty** · **ws**
 - **Bun** HTML server · **Node** PTY broker
-- **Rust / Ratatui** launcher
-
-## Status
-
-Terminal-first, local-first, open source (MIT). Built for people who live in agent CLIs and want a launch pad, not another dashboard.
+- **Rust / Ratatui** Launchpad UI
 
 ## License
 
