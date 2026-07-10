@@ -1205,7 +1205,7 @@ fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 fn draw_filter(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let value = if app.filter.is_empty() {
-        "type to filter · . continue · space fav".to_string()
+        "type to filter".to_string()
     } else {
         app.filter.clone()
     };
