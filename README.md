@@ -4,9 +4,9 @@
 
 One top-level "Product Manager" (you + light automation) oversees many parallel agent threads. Create, monitor, peek, steer, and validate from a dense, real-time, local-first interface designed to feel native in privacy-first browsers like Helium.
 
-> **Current branch (`minimal-terminal-mvp`)**: The concrete “real terminal as a browser tab” first version.  
-> Run `bun run terminal` → open http://localhost:4321 (or Cmd+T in Helium). A full local zsh lives in the tab via xterm.js + PTY.  
-> The rich ACP mission-control dashboard + agent orchestration lives on the `main` branch and will later incorporate this terminal view.
+> **Primary surface today:** browser terminal on http://localhost:4321 (PTY broker on :4322).  
+> Run `bun run terminal` (or the LaunchAgent) → open that URL (or Cmd+T in Helium). A full local zsh lives in the tab via xterm.js + PTY.  
+> Canonical checkout: `~/dev/mission-control`. Data + logs: `~/.grok-mission-control/`.
 
 ## Vision (TL;DR)
 
@@ -30,21 +30,26 @@ We are in the **earliest prototype phase**.
 
 We are deliberately starting with the simplest reliable Grok Build integration (`grok -p ... --output-format streaming-json`) before investing in a full ACP client. This gets us real usage data fast.
 
-## Quick Start — Terminal Tab (this branch)
+## Quick Start — Terminal Tab
 
-This branch (`minimal-terminal-mvp`) is the **fast, shippable first version**:
+The **shippable first version** is a real terminal in a browser tab:
 
 ```bash
+cd ~/dev/mission-control
 bun install
-bun run terminal     # starts real PTY server on :4321
+bun run terminal     # HTML :4321 + PTY :4322
 # open http://localhost:4321  (or let the extension/newtab.html redirect you)
+
+# Install as a macOS Login Item (LaunchAgent, KeepAlive):
+bun run terminal:install
 ```
 
 - A full local `zsh` (or your `$SHELL`) runs inside the browser tab.
 - Resize, colors, vim, tmux, Ctrl+C — everything works because it is a real PTY.
 - Perfect as a Helium new-tab page (`Cmd+T` = new shell).
+- LaunchAgent label: `com.grok-mission-control.terminal` (working dir = this repo).
 
-The heavier Next.js dashboard + ACP agent orchestration is on `main` and will later embed this same terminal experience for “raw view per thread”.
+The Next.js dashboard + ACP agent orchestration remains under `app/`, `lib/harness/`, and `server/` and will later embed this same terminal for “raw view per thread”.
 
 You do **not** need the `grok` CLI for the pure terminal MVP.
 

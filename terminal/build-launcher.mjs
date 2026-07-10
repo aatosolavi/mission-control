@@ -1,7 +1,18 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 
@@ -12,6 +23,12 @@ const releaseBinary = join(
 );
 const installDir = join(process.env.HOME || root, ".grok-mission-control", "bin");
 const installedBinary = join(installDir, "mc");
+const tempInstalledBinary = join(installDir, `.mc-${process.pid}.tmp`);
+const pathShimDir = join(process.env.HOME || root, ".local", "bin");
+const pathShim = join(pathShimDir, "mc");
+const shellIntegrationDir = join(process.env.HOME || root, ".grok-mission-control", "shell");
+const zshIntegration = join(shellIntegrationDir, "mc.zsh");
+const zshrc = join(process.env.HOME || root, ".zshrc");
 
 const rustc = spawnSync("rustup", ["which", "rustc"], {
   encoding: "utf8",
@@ -51,7 +68,104 @@ if (build.status !== 0) {
 }
 
 mkdirSync(installDir, { recursive: true });
-copyFileSync(releaseBinary, installedBinary);
-chmodSync(installedBinary, 0o755);
+copyFileSync(releaseBinary, tempInstalledBinary);
+chmodSync(tempInstalledBinary, 0o755);
+renameSync(tempInstalledBinary, installedBinary);
 
 console.log(`[terminal] Installed Ratatui launcher to ${installedBinary}`);
+
+mkdirSync(pathShimDir, { recursive: true });
+try {
+  const existing = lstatSync(pathShim);
+  if (existing.isSymbolicLink()) {
+    const target = readlinkSync(pathShim);
+    if (target !== installedBinary) {
+      unlinkSync(pathShim);
+      symlinkSync(installedBinary, pathShim);
+    }
+  } else {
+    console.warn(`[terminal] Skipped PATH shim because ${pathShim} already exists`);
+  }
+} catch (error) {
+  if (error?.code !== "ENOENT") {
+    throw error;
+  }
+  symlinkSync(installedBinary, pathShim);
+}
+
+console.log(`[terminal] PATH shim available at ${pathShim}`);
+
+mkdirSync(shellIntegrationDir, { recursive: true });
+writeFileSync(
+  zshIntegration,
+  `# Mission Control shell integration.
+# This wrapper lets Mission Control selections cd the parent shell before
+# launching a shell or agent. Herdr and other terminal managers can then observe
+# the cwd change.
+mc() {
+  local _mc_bin="$HOME/.grok-mission-control/bin/mc"
+  local _mc_cd_file="\${TMPDIR:-/tmp}/mc-cd-$$"
+
+  MC_SHELL_INTEGRATION=1 MC_CD_FILE="$_mc_cd_file" "$_mc_bin" "$@"
+  local _mc_status=$?
+
+  if [[ $_mc_status -eq 0 && -s "$_mc_cd_file" ]]; then
+    local _mc_action="shell"
+    local _mc_target
+    while IFS='=' read -r _mc_key _mc_value; do
+      case "$_mc_key" in
+        action) _mc_action="$_mc_value" ;;
+        cwd) _mc_target="$_mc_value" ;;
+      esac
+    done < "$_mc_cd_file"
+    if [[ -z "$_mc_target" ]]; then
+      _mc_target="$(cat "$_mc_cd_file")"
+    fi
+    rm -f "$_mc_cd_file"
+    if [[ -n "$_mc_target" && -d "$_mc_target" ]]; then
+      builtin cd "$_mc_target"
+    fi
+
+    case "$_mc_action" in
+      shell)
+        ;;
+      codex)
+        local _mc_codex_command="\${GROK_TERMINAL_CODEX_COMMAND:-codex}"
+        eval "$_mc_codex_command"
+        return $?
+        ;;
+      grok)
+        local _mc_grok_command="\${GROK_TERMINAL_GROK_COMMAND:-grok}"
+        eval "$_mc_grok_command"
+        return $?
+        ;;
+    esac
+  else
+    rm -f "$_mc_cd_file"
+  fi
+
+  return $_mc_status
+}
+`,
+);
+
+const sourceBlock = `
+# >>> mission-control mc integration >>>
+[ -s "$HOME/.grok-mission-control/shell/mc.zsh" ] && source "$HOME/.grok-mission-control/shell/mc.zsh"
+# <<< mission-control mc integration <<<
+`;
+
+let existingZshrc = "";
+try {
+  existingZshrc = readFileSync(zshrc, "utf8");
+} catch (error) {
+  if (error?.code !== "ENOENT") {
+    throw error;
+  }
+}
+
+if (!existingZshrc.includes("mission-control mc integration")) {
+  writeFileSync(zshrc, `${existingZshrc.trimEnd()}\n${sourceBlock}`);
+}
+
+console.log(`[terminal] Shell integration available at ${zshIntegration}`);

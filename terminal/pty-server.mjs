@@ -21,7 +21,7 @@ const SHELL = process.env.SHELL || (process.platform === "win32" ? "powershell.e
 const HOME = process.env.HOME || process.cwd();
 const DEFAULT_START_CWD =
   process.env.GROK_TERMINAL_START_CWD ||
-  join(HOME, "Documents/10-19 Work/Personal Projects");
+  join(HOME, "dev");
 const STATE_PATH = join(HOME, ".grok-mission-control", "terminal-state.json");
 const INSTALLED_LAUNCHER_PATH = join(HOME, ".grok-mission-control", "bin/mc");
 const LEGACY_INSTALLED_LAUNCHER_PATH = join(HOME, ".grok-mission-control", "bin/grok-terminal-launcher");
@@ -162,8 +162,29 @@ function normalizeSessionId(value) {
 function appendHistory(session, data) {
   session.history += data;
   if (session.history.length > SESSION_HISTORY_LIMIT) {
-    session.history = session.history.slice(-SESSION_HISTORY_LIMIT);
+    session.history = trimHistoryForReplay(session.history);
   }
+}
+
+function trimHistoryForReplay(history) {
+  const trimStart = history.length - SESSION_HISTORY_LIMIT;
+  if (trimStart <= 0) return history;
+
+  // Raw terminal output can contain ANSI/CSI sequences. Cutting blindly can
+  // expose tails like "8m" as visible text during replay, so prefer a fresh row.
+  const nextLineStart = history.indexOf("\n", trimStart);
+  if (nextLineStart !== -1 && nextLineStart - trimStart < 50_000) {
+    return history.slice(nextLineStart + 1);
+  }
+
+  // Very long lines are unusual but possible. If there is no nearby newline,
+  // restart at the next escape prefix rather than in the middle of one.
+  const nextEscapeStart = history.indexOf("\x1b", trimStart);
+  if (nextEscapeStart !== -1 && nextEscapeStart - trimStart < 2_000) {
+    return history.slice(nextEscapeStart);
+  }
+
+  return history.slice(trimStart);
 }
 
 function sendToClient(ws, data) {

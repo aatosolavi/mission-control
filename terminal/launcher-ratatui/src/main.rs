@@ -29,7 +29,7 @@ use ratatui::{
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-const DEFAULT_ROOT: &str = "Documents/10-19 Work/Personal Projects";
+const DEFAULT_ROOT: &str = "dev";
 const MAX_WIDTH: u16 = 92;
 const MAX_RECENTS: usize = 20;
 const RECENTS_FILE: &str = ".grok-mission-control/recent-workspaces.txt";
