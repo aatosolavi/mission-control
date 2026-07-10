@@ -239,7 +239,7 @@ export default function MissionControl() {
   function getStatusIcon(status: ThreadStatus) {
     switch (status) {
       case "working":
-        return <Play className="w-3.5 h-3.5 text-emerald-400" />;
+        return <Play className="w-3.5 h-3.5 text-primary" />;
       case "done":
         return <CheckCircle2 className="w-3.5 h-3.5 text-sky-400" />;
       case "error":
@@ -249,7 +249,7 @@ export default function MissionControl() {
       case "blocked":
         return <AlertCircle className="w-3.5 h-3.5 text-amber-400" />;
       default:
-        return <Clock className="w-3.5 h-3.5 text-zinc-400" />;
+        return <Clock className="w-3.5 h-3.5 text-muted-foreground" />;
     }
   }
 
@@ -269,7 +269,7 @@ export default function MissionControl() {
           key={event.id || index}
           className="text-xs font-mono leading-snug px-3 py-1.5 border-l-2 border-amber-500/60 text-amber-300 bg-amber-950/10"
         >
-          <span className="text-[10px] text-zinc-500 mr-2 tabular-nums">
+          <span className="text-[10px] text-muted-foreground mr-2 tabular-nums">
             {new Date(event.timestamp).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
@@ -304,17 +304,17 @@ export default function MissionControl() {
               ? "border-amber-500/60 text-amber-300/80 bg-amber-950/10"
               : isStatus
                 ? "border-sky-500/60 text-sky-300/80 bg-sky-950/10"
-                : "border-zinc-700 text-zinc-400 bg-zinc-950/40"
+                : "border-border text-muted-foreground bg-background/40"
         }`}
       >
-        <span className="text-[10px] text-zinc-500 mr-2 tabular-nums">
+        <span className="text-[10px] text-muted-foreground mr-2 tabular-nums">
           {new Date(event.timestamp).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
             second: "2-digit",
           })}
         </span>
-        <span className="text-[10px] uppercase tracking-[1px] mr-2 text-zinc-500">
+        <span className="text-[10px] uppercase tracking-[1px] mr-2 text-muted-foreground">
           {event.type}
         </span>
         <span className="whitespace-pre-wrap break-words">{text}</span>
@@ -323,31 +323,31 @@ export default function MissionControl() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-200 font-sans overflow-hidden">
+    <div className="flex flex-col h-screen bg-background text-foreground font-sans overflow-hidden">
       {/* Top bar — dense mission control chrome */}
-      <div className="h-12 border-b border-white/10 bg-zinc-950/95 backdrop-blur flex items-center px-4 justify-between text-sm">
+      <div className="h-12 border-b border-border bg-background/95 backdrop-blur flex items-center px-4 justify-between text-sm">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-emerald-400" />
+            <Terminal className="w-4 h-4 text-primary" />
             <div className="font-semibold tracking-[-0.3px]">
               Mission Control
             </div>
-            <div className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/40">
+            <div className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
               v0.1
             </div>
           </div>
-          <div className="text-white/30">|</div>
-          <div className="text-white/50 text-xs">One PM. Many threads.</div>
+          <div className="text-muted-foreground/80">|</div>
+          <div className="text-muted-foreground text-xs">One PM. Many threads.</div>
         </div>
 
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-sm font-medium transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-primary hover:bg-primary/90 active:bg-primary/80 text-primary-foreground text-sm font-medium transition-colors"
           >
             <Plus className="w-4 h-4" /> New Thread
           </button>
-          <div className="text-[10px] text-white/40 px-2">
+          <div className="text-[10px] text-muted-foreground px-2">
             {threads.length} thread{threads.length === 1 ? "" : "s"}
           </div>
         </div>
@@ -355,21 +355,21 @@ export default function MissionControl() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Thread list (left sidebar) */}
-        <div className="w-80 border-r border-white/10 flex flex-col bg-zinc-950">
-          <div className="px-3 py-2 text-[10px] uppercase tracking-[1px] text-white/40 border-b border-white/10 flex items-center justify-between">
+        <div className="w-80 border-r border-border flex flex-col bg-background">
+          <div className="px-3 py-2 text-[10px] uppercase tracking-[1px] text-muted-foreground border-b border-border flex items-center justify-between">
             <span>Active Threads</span>
-            <button onClick={refreshThreads} className="hover:text-white/70">
+            <button onClick={refreshThreads} className="hover:text-foreground/70">
               ↻
             </button>
           </div>
 
           <div className="flex-1 overflow-auto p-2 space-y-1">
             {isLoading && (
-              <div className="p-3 text-xs text-white/40">Loading…</div>
+              <div className="p-3 text-xs text-muted-foreground">Loading…</div>
             )}
 
             {threads.length === 0 && !isLoading && (
-              <div className="p-4 text-xs text-white/40">
+              <div className="p-4 text-xs text-muted-foreground">
                 No threads yet. Create one to start an agent.
               </div>
             )}
@@ -382,23 +382,23 @@ export default function MissionControl() {
                   onClick={() => setSelectedId(t.id)}
                   className={`w-full text-left px-3 py-2.5 rounded-lg border transition-all flex flex-col gap-1 ${
                     isSelected
-                      ? "bg-white/5 border-white/20"
-                      : "bg-zinc-900/60 border-white/5 hover:border-white/10"
+                      ? "bg-muted border-border"
+                      : "bg-card border-border/60 hover:border-primary/40"
                   }`}
                 >
                   <div className="flex items-center justify-between text-sm">
                     <div className="font-medium truncate pr-2">{t.title}</div>
-                    <div className="flex items-center gap-1.5 text-[10px] text-white/50">
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                       {getStatusIcon(t.status)}
                       <span className="tabular-nums">{t.status}</span>
                     </div>
                   </div>
-                  <div className="text-[10px] text-white/40 flex items-center gap-1.5 truncate">
+                  <div className="text-[10px] text-muted-foreground flex items-center gap-1.5 truncate">
                     <FolderOpen className="w-3 h-3" />
                     <span className="truncate">{t.cwd}</span>
                   </div>
                   {t.lastSummary && (
-                    <div className="text-[10px] text-emerald-400/80 line-clamp-2">
+                    <div className="text-[10px] text-primary/80 line-clamp-2">
                       {t.lastSummary}
                     </div>
                   )}
@@ -407,7 +407,7 @@ export default function MissionControl() {
             })}
           </div>
 
-          <div className="p-3 border-t border-white/10 text-[10px] text-white/40">
+          <div className="p-3 border-t border-border text-[10px] text-muted-foreground">
             Prototype • Real grok processes • Streaming JSON
           </div>
         </div>
@@ -420,13 +420,13 @@ export default function MissionControl() {
                 <div className="text-2xl font-semibold tracking-tight mb-2">
                   Select or create a thread
                 </div>
-                <p className="text-white/50 max-w-sm">
+                <p className="text-muted-foreground max-w-sm">
                   The left sidebar shows all running agent threads. Click one to
                   watch live output and steer it.
                 </p>
                 <button
                   onClick={() => setShowCreate(true)}
-                  className="mt-6 inline-flex items-center gap-2 px-5 py-2 rounded-full bg-white/5 hover:bg-white/10 border border-white/10"
+                  className="mt-6 inline-flex items-center gap-2 px-5 py-2 rounded-full bg-muted hover:bg-muted border border-border"
                 >
                   <Plus className="w-4 h-4" /> Create your first thread
                 </button>
@@ -437,13 +437,13 @@ export default function MissionControl() {
           {selectedId && selectedThread && (
             <>
               {/* Thread header */}
-              <div className="h-14 border-b border-white/10 px-4 flex items-center justify-between bg-zinc-950/80">
+              <div className="h-14 border-b border-border px-4 flex items-center justify-between bg-background/80">
                 <div>
                   <div className="font-medium">{selectedThread.title}</div>
-                  <div className="text-xs text-white/40 flex items-center gap-2">
+                  <div className="text-xs text-muted-foreground flex items-center gap-2">
                     <span>{selectedThread.cwd}</span>
                     <span>·</span>
-                    <span className="font-mono text-emerald-400/70">
+                    <span className="font-mono text-primary/70">
                       {selectedThread.harness}
                     </span>
                     {selectedThread.pid && (
@@ -453,7 +453,7 @@ export default function MissionControl() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <div className="text-xs px-2 py-0.5 rounded bg-white/5 text-white/60">
+                  <div className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground">
                     {selectedThread.status}
                   </div>
                   <button
@@ -491,7 +491,7 @@ export default function MissionControl() {
                         <button
                           key={oid}
                           onClick={() => respondToPermission("approved", oid)}
-                          className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-xs text-white"
+                          className="px-3 py-1 rounded bg-primary hover:bg-primary/90 text-xs text-primary-foreground"
                         >
                           {label}
                         </button>
@@ -500,7 +500,7 @@ export default function MissionControl() {
                     {(((pendingPermission as any)?.request?.options as any[]) || []).length === 0 && (
                       <button
                         onClick={() => respondToPermission("approved")}
-                        className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-xs text-white"
+                        className="px-3 py-1 rounded bg-primary hover:bg-primary/90 text-xs text-primary-foreground"
                       >
                         Approve (default)
                       </button>
@@ -508,12 +508,12 @@ export default function MissionControl() {
                     {/* eslint-enable @typescript-eslint/no-explicit-any */}
                     <button
                       onClick={() => respondToPermission("cancelled")}
-                      className="px-3 py-1 rounded border border-white/20 hover:bg-white/5 text-xs"
+                      className="px-3 py-1 rounded border border-border hover:bg-muted text-xs"
                     >
                       Deny / Cancel
                     </button>
                   </div>
-                  <div className="text-[10px] text-white/40 mt-1">
+                  <div className="text-[10px] text-muted-foreground mt-1">
                     Selecting an option sends the exact optionId to the agent.
                   </div>
                 </div>
@@ -522,10 +522,10 @@ export default function MissionControl() {
               {/* Live event log */}
               <div
                 ref={eventContainerRef}
-                className="flex-1 overflow-auto bg-black/60 font-mono text-[12px] leading-tight py-2 border-b border-white/10"
+                className="flex-1 overflow-auto bg-muted/40 font-mono text-[12px] leading-tight py-2 border-b border-border"
               >
                 {events.length === 0 && (
-                  <div className="px-4 py-8 text-white/30 text-xs">
+                  <div className="px-4 py-8 text-muted-foreground/80 text-xs">
                     Waiting for output from the agent…
                   </div>
                 )}
@@ -533,8 +533,8 @@ export default function MissionControl() {
               </div>
 
               {/* Steering input (the "PM" control surface) */}
-              <div className="p-3 border-t border-white/10 bg-zinc-950">
-                <div className="text-[10px] uppercase tracking-[1px] text-white/40 mb-1.5 px-1">
+              <div className="p-3 border-t border-border bg-background">
+                <div className="text-[10px] uppercase tracking-[1px] text-muted-foreground mb-1.5 px-1">
                   Send guidance to this thread
                 </div>
                 <form
@@ -555,16 +555,16 @@ export default function MissionControl() {
                     name="msg"
                     type="text"
                     placeholder="Tell the agent what to focus on or unblock…"
-                    className="flex-1 bg-zinc-900 border border-white/10 rounded-md px-3 py-2 text-sm placeholder:text-white/30 focus:outline-none focus:border-white/30"
+                    className="flex-1 bg-card border border-border rounded-md px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
                   />
                   <button
                     type="submit"
-                    className="px-4 rounded-md bg-white/10 hover:bg-white/15 active:bg-white/20 border border-white/10 flex items-center gap-2 text-sm"
+                    className="px-4 rounded-md bg-muted hover:bg-accent active:bg-accent border border-border flex items-center gap-2 text-sm"
                   >
                     <MessageSquare className="w-4 h-4" /> Send
                   </button>
                 </form>
-                <div className="text-[10px] text-white/30 mt-1.5 px-1">
+                <div className="text-[10px] text-muted-foreground/80 mt-1.5 px-1">
                   Steering + permission approvals use the live ACP
                   session/prompt path.
                 </div>
@@ -582,49 +582,49 @@ export default function MissionControl() {
               initial={{ opacity: 0, scale: 0.96, y: 8 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.96, y: 8 }}
-              className="w-full max-w-lg rounded-2xl border border-white/10 bg-zinc-950 p-6"
+              className="w-full max-w-lg rounded-2xl border border-border bg-background p-6"
             >
               <div className="text-lg font-semibold mb-1">
                 Create new agent thread
               </div>
-              <div className="text-sm text-white/50 mb-5">
+              <div className="text-sm text-muted-foreground mb-5">
                 This will spawn a real <span className="font-mono">grok</span>{" "}
                 process using headless mode.
               </div>
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-xs text-white/50 mb-1.5">
+                  <label className="block text-xs text-muted-foreground mb-1.5">
                     Goal / Prompt
                   </label>
                   <textarea
                     value={goal}
                     onChange={(e) => setGoal(e.target.value)}
                     placeholder="Implement rate limiting with Redis and add comprehensive tests"
-                    className="w-full h-24 resize-y bg-zinc-900 border border-white/10 rounded-lg p-3 text-sm"
+                    className="w-full h-24 resize-y bg-card border border-border rounded-lg p-3 text-sm"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs text-white/50 mb-1.5">
+                  <label className="block text-xs text-muted-foreground mb-1.5">
                     Working Directory
                   </label>
                   <input
                     value={cwd}
                     onChange={(e) => setCwd(e.target.value)}
-                    className="w-full bg-zinc-900 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono"
+                    className="w-full bg-card border border-border rounded-lg px-3 py-2 text-sm font-mono"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs text-white/50 mb-1.5">
+                  <label className="block text-xs text-muted-foreground mb-1.5">
                     Title (optional)
                   </label>
                   <input
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     placeholder="Auto-generated from goal"
-                    className="w-full bg-zinc-900 border border-white/10 rounded-lg px-3 py-2 text-sm"
+                    className="w-full bg-card border border-border rounded-lg px-3 py-2 text-sm"
                   />
                 </div>
               </div>
@@ -632,20 +632,20 @@ export default function MissionControl() {
               <div className="mt-6 flex justify-end gap-2">
                 <button
                   onClick={() => setShowCreate(false)}
-                  className="px-4 py-2 rounded-lg hover:bg-white/5"
+                  className="px-4 py-2 rounded-lg hover:bg-muted"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={createThread}
                   disabled={isCreating || !goal.trim() || !cwd.trim()}
-                  className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 flex items-center gap-2"
+                  className="px-5 py-2 rounded-lg bg-primary hover:bg-primary/90 disabled:opacity-50 flex items-center gap-2"
                 >
                   {isCreating ? "Spawning…" : "Launch Thread"}
                 </button>
               </div>
 
-              <div className="mt-4 text-[10px] text-white/30">
+              <div className="mt-4 text-[10px] text-muted-foreground/80">
                 The agent will run with the same permissions as your current
                 user. Use with care.
               </div>

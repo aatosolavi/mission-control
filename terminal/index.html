@@ -10,6 +10,29 @@
   <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@5.5.0/css/xterm.css">
   <style>
     * { box-sizing: border-box; }
+    :root {
+      /* Orange accent (shared chrome — cursor, selection, overlays) */
+      --mc-accent: #f97316;
+      --mc-accent-bright: #fb923c;
+      --mc-accent-deep: #ea580c;
+      --terminal-edge-bg: #141414;
+      --terminal-fg: #e5e5e5;
+      --terminal-cursor-bg: var(--mc-accent-bright);
+      --terminal-cursor-fg: #141414;
+      --terminal-selection: color-mix(in srgb, var(--mc-accent) 35%, #141414);
+      color-scheme: dark;
+    }
+    html[data-theme="light"] {
+      --mc-accent: #ea580c;
+      --mc-accent-bright: #f97316;
+      --mc-accent-deep: #c2410c;
+      --terminal-edge-bg: #fafafa;
+      --terminal-fg: #171717;
+      --terminal-cursor-bg: var(--mc-accent);
+      --terminal-cursor-fg: #ffffff;
+      --terminal-selection: color-mix(in srgb, var(--mc-accent) 22%, #fafafa);
+      color-scheme: light;
+    }
     html, body {
       margin: 0;
       padding: 0;
@@ -17,12 +40,8 @@
       width: 100%;
       overflow: hidden;
       /* Background is driven by JS so the whole tab matches the terminal theme. */
-      background: #141414;
-    }
-    html {
-      --terminal-edge-bg: #141414;
-      --terminal-cursor-bg: #ffffff;
-      --terminal-cursor-fg: #141414;
+      background: var(--terminal-edge-bg);
+      color: var(--terminal-fg);
     }
     #terminal {
       position: absolute;
@@ -81,8 +100,9 @@
       display: none;
       place-items: center;
       background: color-mix(in srgb, var(--terminal-edge-bg), transparent 18%);
-      border: 1px solid #5f86b3;
-      color: #e5e5e5;
+      border: 1px solid var(--mc-accent);
+      color: var(--terminal-fg);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mc-accent) 35%, transparent);
       font: 13px "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       pointer-events: none;
       z-index: 10;
@@ -90,88 +110,179 @@
     #drop-overlay.visible {
       display: grid;
     }
+    #theme-chip {
+      position: fixed;
+      right: 10px;
+      bottom: 10px;
+      z-index: 20;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease;
+      border: 1px solid color-mix(in srgb, var(--mc-accent) 55%, transparent);
+      background: color-mix(in srgb, var(--terminal-edge-bg) 88%, var(--mc-accent));
+      color: var(--terminal-fg);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font: 11px/1.2 "Geist Mono", ui-monospace, Menlo, monospace;
+      letter-spacing: 0.02em;
+    }
+    #theme-chip.visible {
+      opacity: 1;
+    }
   </style>
 </head>
 <body>
   <div id="terminal"></div>
   <div id="drop-overlay">Drop files to attach</div>
+  <div id="theme-chip" aria-live="polite"></div>
 
   <script type="module">
     // xterm + fit via esm.sh (zero build, reliable CDN for MVP)
     import { Terminal } from 'https://esm.sh/@xterm/xterm@5.5.0';
     import { FitAddon } from 'https://esm.sh/@xterm/addon-fit@0.11';
 
-    const grokNight = {
+    const THEME_STORAGE_KEY = 'mc-terminal-theme';
+
+    // Orange-accented palettes. ANSI hues stay readable; chrome uses orange.
+    const mcNight = {
       background: '#141414',
       foreground: '#e5e5e5',
-      cursor: '#ffffff',
+      cursor: '#fb923c',
       cursorAccent: '#141414',
-      selectionBackground: '#343541',
+      selectionBackground: '#5c3416',
+      selectionForeground: '#fff7ed',
       black: '#141414',
       red: '#f87171',
       green: '#4ade80',
-      yellow: '#fde047',
+      yellow: '#fbbf24',
       blue: '#60a5fa',
       magenta: '#c084fc',
-      cyan: '#67e8f9',
+      cyan: '#fb923c',
       white: '#e5e5e5',
       brightBlack: '#52525b',
       brightRed: '#fca5a5',
       brightGreen: '#86efac',
-      brightYellow: '#fef08c',
+      brightYellow: '#fde68a',
       brightBlue: '#93c5fd',
       brightMagenta: '#d8b4fe',
-      brightCyan: '#a5f3fc',
+      brightCyan: '#fdba74',
       brightWhite: '#fafafa',
     };
 
-    const grokDay = {
+    const mcDay = {
       background: '#fafafa',
       foreground: '#171717',
-      cursor: '#111111',
-      cursorAccent: '#fafafa',
-      selectionBackground: '#d4d4d8',
+      cursor: '#ea580c',
+      cursorAccent: '#ffffff',
+      selectionBackground: '#fed7aa',
+      selectionForeground: '#7c2d12',
       black: '#262626',
       red: '#dc2626',
       green: '#16a34a',
-      yellow: '#ca8a04',
+      yellow: '#d97706',
       blue: '#2563eb',
       magenta: '#9333ea',
-      cyan: '#0891b2',
+      cyan: '#ea580c',
       white: '#e5e5e5',
       brightBlack: '#737373',
       brightRed: '#ef4444',
       brightGreen: '#22c55e',
-      brightYellow: '#eab308',
+      brightYellow: '#f59e0b',
       brightBlue: '#3b82f6',
       brightMagenta: '#a855f7',
-      brightCyan: '#06b6d4',
+      brightCyan: '#f97316',
       brightWhite: '#ffffff',
     };
 
-    function getSystemTheme() {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      return prefersDark ? grokNight : grokDay;
+    const params = new URLSearchParams(location.search);
+
+    function normalizeThemePreference(value) {
+      if (value === 'light' || value === 'dark' || value === 'system') return value;
+      return null;
     }
 
-    let currentTheme = getSystemTheme();
+    function getThemePreference() {
+      const fromQuery = normalizeThemePreference(params.get('theme'));
+      if (fromQuery) {
+        localStorage.setItem(THEME_STORAGE_KEY, fromQuery);
+        return fromQuery;
+      }
+      return normalizeThemePreference(localStorage.getItem(THEME_STORAGE_KEY)) || 'system';
+    }
 
-    function applyTheme(theme) {
+    let themePreference = getThemePreference();
+
+    function systemIsDark() {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+
+    function resolveThemeMode() {
+      if (themePreference === 'light') return 'light';
+      if (themePreference === 'dark') return 'dark';
+      return systemIsDark() ? 'dark' : 'light';
+    }
+
+    function paletteForMode(mode) {
+      return mode === 'light' ? mcDay : mcNight;
+    }
+
+    let currentTheme = paletteForMode(resolveThemeMode());
+    let themeChipTimer = 0;
+
+    function flashThemeChip(label) {
+      const chip = document.getElementById('theme-chip');
+      if (!chip) return;
+      chip.textContent = label;
+      chip.classList.add('visible');
+      window.clearTimeout(themeChipTimer);
+      themeChipTimer = window.setTimeout(() => chip.classList.remove('visible'), 1400);
+    }
+
+    /** @type {import('https://esm.sh/@xterm/xterm@5.5.0').Terminal | null} */
+    let term = null;
+
+    function applyTheme(theme, mode = resolveThemeMode()) {
       currentTheme = theme;
-      term.options.theme = theme;
-      // Make the entire page (including any area around the xterm canvas) match perfectly
-      document.documentElement.style.background = theme.background;
+      if (term) {
+        term.options.theme = theme;
+      }
+      const root = document.documentElement;
+      root.dataset.theme = mode;
+      root.style.background = theme.background;
       document.body.style.background = theme.background;
-      document.documentElement.style.setProperty('--terminal-edge-bg', theme.background);
-      document.documentElement.style.setProperty('--terminal-cursor-bg', theme.cursor);
-      document.documentElement.style.setProperty('--terminal-cursor-fg', theme.cursorAccent);
+      root.style.setProperty('--terminal-edge-bg', theme.background);
+      root.style.setProperty('--terminal-fg', theme.foreground);
+      root.style.setProperty('--terminal-cursor-bg', theme.cursor);
+      root.style.setProperty('--terminal-cursor-fg', theme.cursorAccent);
+      root.style.colorScheme = mode;
+    }
+
+    // Paint chrome before xterm mounts so the first frame isn't a dark flash in light mode.
+    applyTheme(currentTheme, resolveThemeMode());
+
+    function setThemePreference(next) {
+      themePreference = normalizeThemePreference(next) || 'system';
+      localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+      const mode = resolveThemeMode();
+      applyTheme(paletteForMode(mode), mode);
+      flashThemeChip(
+        themePreference === 'system'
+          ? `theme: system (${mode})`
+          : `theme: ${themePreference}`,
+      );
+    }
+
+    function cycleThemePreference() {
+      const order = ['system', 'light', 'dark'];
+      const idx = order.indexOf(themePreference);
+      setThemePreference(order[(idx + 1) % order.length]);
     }
 
     function updateThemeFromSystem() {
-      applyTheme(getSystemTheme());
+      if (themePreference !== 'system') return;
+      const mode = resolveThemeMode();
+      applyTheme(paletteForMode(mode), mode);
     }
-
-    const params = new URLSearchParams(location.search);
     const cursorParam = params.get('cursor');
     const blinkParam = params.get('blink');
     if (cursorParam === 'bar' || cursorParam === 'block' || cursorParam === 'underline') {
@@ -184,7 +295,7 @@
       localStorage.removeItem('grok-terminal-cursor');
     }
 
-    const term = new Terminal({
+    term = new Terminal({
       cursorBlink: blinkParam === '1' || blinkParam === 'true',
       cursorStyle,
       fontSize: 13,
@@ -199,7 +310,7 @@
       drawBoldTextInBrightColors: true,
       minimumContrastRatio: 1,
       customGlyphs: true,
-      theme: getSystemTheme(),
+      theme: currentTheme,
       allowTransparency: false,
     });
 
@@ -257,8 +368,23 @@
 
     // Apply the correct terminal theme + body background immediately after open.
     // Then listen for live system theme changes (user flips OS dark/light mode).
-    updateThemeFromSystem();
+    applyTheme(paletteForMode(resolveThemeMode()), resolveThemeMode());
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateThemeFromSystem);
+
+    // Cycle themes: system → light → dark. Works even when the PTY owns keys,
+    // because we listen in capture on window and only handle this chord.
+    window.addEventListener(
+      'keydown',
+      (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'l') {
+          event.preventDefault();
+          event.stopPropagation();
+          cycleThemePreference();
+        }
+      },
+      true,
+    );
+
     requestAnimationFrame(syncDomCursorCellColors);
     window.setInterval(syncDomCursorCellColors, 500);
 
@@ -489,7 +615,10 @@
     // The server will send the initial prompt.
 
     // Keyboard hint (optional)
-    console.log('%c[Mission Control] xterm.js + real local PTY ready. Base colors follow system theme. ANSI/truecolor left to the PTY.', 'color:#555');
+    console.log(
+      '%c[Mission Control] xterm.js + real local PTY ready. Orange accent. Theme: system/light/dark via ?theme= or ⌘/Ctrl+Shift+L. ANSI/truecolor left to the PTY.',
+      'color:#f97316',
+    );
   </script>
 </body>
 </html>

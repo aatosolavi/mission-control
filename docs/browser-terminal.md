@@ -5,6 +5,8 @@ This branch runs a real local shell inside a browser tab:
 - HTML server: `http://localhost:4321`
 - PTY broker: `ws://localhost:4322`
 - Entry command: `bun run terminal`
+- Accent: orange (`#f97316` / `#fb923c`)
+- Themes: **system / light / dark** — `?theme=system|light|dark`, or **⌘/Ctrl+Shift+L** to cycle (stored in `localStorage`)
 
 The PTY broker is a Node process because `@lydell/node-pty` is more reliable there than under Bun on macOS. The Bun process only serves the HTML and attachment upload endpoint.
 

@@ -33,6 +33,10 @@ const DEFAULT_ROOT: &str = "dev";
 const MAX_WIDTH: u16 = 92;
 const MAX_RECENTS: usize = 20;
 const RECENTS_FILE: &str = ".grok-mission-control/recent-workspaces.txt";
+/// Mission Control accent — orange-500 (#f97316).
+const ACCENT: Color = Color::Rgb(249, 115, 22);
+/// Text on filled accent chips (dark enough for contrast on orange).
+const ACCENT_ON: Color = Color::Rgb(23, 23, 23);
 
 #[derive(Clone)]
 struct Repo {
@@ -362,7 +366,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Span::styled(
             app.selected_action.label(),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" in a workspace", Style::default().fg(Color::Gray)),
@@ -411,8 +415,8 @@ fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let width = label.chars().count() as u16;
         let style = if *action == app.selected_action {
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+                .fg(ACCENT_ON)
+                .bg(ACCENT)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
@@ -437,7 +441,7 @@ fn draw_filter(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let style = if app.filter.is_empty() {
         Style::default().fg(Color::DarkGray)
     } else {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(ACCENT)
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -475,7 +479,7 @@ fn draw_repos(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!("{marker} "), Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{marker} "), Style::default().fg(ACCENT)),
             Span::styled(pad_or_trim(&repo.name, 24), style),
             Span::styled("  ", Style::default()),
             Span::styled(
