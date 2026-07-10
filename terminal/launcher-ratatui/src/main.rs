@@ -434,6 +434,7 @@ struct App {
     hitboxes: UiHitboxes,
     /// Ephemeral footer flash for side actions (copy, open, errors).
     status: Option<String>,
+    status_set_at: Option<Instant>,
     screen: Screen,
     settings_selected: usize,
 }
@@ -454,6 +455,7 @@ impl App {
             offset: 0,
             hitboxes: UiHitboxes::default(),
             status: None,
+            status_set_at: None,
             screen: Screen::Picker,
             settings_selected: 0,
         };
@@ -467,10 +469,22 @@ impl App {
 
     fn set_status(&mut self, message: impl Into<String>) {
         self.status = Some(message.into());
+        self.status_set_at = Some(Instant::now());
     }
 
     fn clear_status(&mut self) {
         self.status = None;
+        self.status_set_at = None;
+    }
+
+    /// Drop footer flashes after a few seconds so they don't stick forever.
+    fn tick_status(&mut self) {
+        const STATUS_TTL: Duration = Duration::from_millis(2500);
+        if let Some(set_at) = self.status_set_at {
+            if set_at.elapsed() >= STATUS_TTL {
+                self.clear_status();
+            }
+        }
     }
 
     fn selected_repo(&self) -> Option<&Repo> {
@@ -873,12 +887,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut app = App::new();
 
     loop {
+        app.tick_status();
         terminal.draw(|frame| match app.screen {
             Screen::Picker => draw(frame, &mut app),
             Screen::Settings => draw_settings(frame, &mut app),
         })?;
 
-        if !event::poll(Duration::from_millis(250))? {
+        // Poll shorter while a status flash is visible so it clears on time.
+        let poll_ms = if app.status.is_some() { 50 } else { 250 };
+        if !event::poll(Duration::from_millis(poll_ms))? {
             continue;
         }
 
