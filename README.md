@@ -76,7 +76,7 @@ bun run terminal
 | 8 | Droid |
 | 9 | Shell |
 
-Missing CLIs are **dimmed**. From any shell: run `mc` again.
+Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) to **install** it — a progress bar appears under the panel. From any shell: run `mc` again.
 
 **Memory**
 - Last agent per workspace (auto-select on highlight)

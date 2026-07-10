@@ -68,7 +68,7 @@ The browser page should stay a terminal surface. Workspace/app selection is movi
 - If the binary is missing, the broker falls back to the normal login shell.
 - Set `GROK_TERMINAL_USE_LAUNCHER=0` to force shell-first behavior.
 
-The TUI scans `MC_WORKSPACE_ROOT` (default `~/dev` or `$HOME`), shows repos centered in the terminal, and supports keyboard and mouse input through terminal events. App choices: **Grok**, **Codex**, **Pi**, **Claude**, **Amp**, **Devin**, **Droid**, and **Shell** (keys `1`–`8`, or Tab). Missing CLIs are dimmed.
+The TUI scans `MC_WORKSPACE_ROOT` (default `~/dev` or `$HOME`), shows repos centered in the terminal, and supports keyboard and mouse input through terminal events. App choices include **Grok**, **Codex**, **Pi**, **Cursor**, **Claude**, **Amp**, **Devin**, **Droid**, and **Shell** (keys `1`–`9`, or Tab). Missing CLIs are dimmed; **hover** (or enter / number key) starts a background install with a progress bar under the panel when a recipe is known.
 
 ### Cold-start splash
 

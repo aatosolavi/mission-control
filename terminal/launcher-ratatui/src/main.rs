@@ -2,9 +2,11 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fs,
-    io::{self, stdout},
+    io::{self, stdout, BufRead, BufReader},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -442,6 +444,31 @@ enum Screen {
     Settings,
 }
 
+/// Background CLI install progress (shown under the main panel).
+struct InstallUi {
+    action: Action,
+    fraction: f32,
+    message: String,
+    /// When set, bar lingers briefly then clears.
+    finished_at: Option<Instant>,
+    failed: bool,
+}
+
+enum InstallEvent {
+    Progress {
+        action: Action,
+        fraction: f32,
+        message: String,
+    },
+    Done {
+        action: Action,
+    },
+    Failed {
+        action: Action,
+        error: String,
+    },
+}
+
 struct App {
     state: LauncherState,
     repos: Vec<Repo>,
@@ -456,6 +483,13 @@ struct App {
     status_set_at: Option<Instant>,
     screen: Screen,
     settings_selected: usize,
+    /// Active or finishing CLI install.
+    install: Option<InstallUi>,
+    install_rx: Option<Receiver<InstallEvent>>,
+    /// Hover dwell before auto-install of a missing CLI.
+    hover_missing: Option<(Action, Instant)>,
+    /// Last drawn panel rect (for progress bar placement).
+    panel_area: Rect,
 }
 
 impl App {
@@ -477,9 +511,249 @@ impl App {
             status_set_at: None,
             screen: Screen::Picker,
             settings_selected: 0,
+            install: None,
+            install_rx: None,
+            hover_missing: None,
+            panel_area: Rect::default(),
         };
         app.apply_agent_memory();
         app
+    }
+
+    fn install_busy(&self) -> bool {
+        matches!(
+            &self.install,
+            Some(InstallUi {
+                finished_at: None,
+                ..
+            })
+        )
+    }
+
+    fn start_install(&mut self, action: Action) {
+        if action == Action::Shell || action.is_available() {
+            return;
+        }
+        if self.install_busy() {
+            self.set_status("install already running");
+            return;
+        }
+        let Some(cmdline) = install_recipe(action) else {
+            self.set_status(format!(
+                "no install recipe for {} yet",
+                action.label().to_ascii_lowercase()
+            ));
+            return;
+        };
+
+        let (tx, rx) = mpsc::channel();
+        self.install_rx = Some(rx);
+        self.install = Some(InstallUi {
+            action,
+            fraction: 0.02,
+            message: format!("installing {}…", action.label().to_ascii_lowercase()),
+            finished_at: None,
+            failed: false,
+        });
+        self.hover_missing = None;
+
+        let label = action.label().to_ascii_lowercase();
+        thread::spawn(move || {
+            let _ = tx.send(InstallEvent::Progress {
+                action,
+                fraction: 0.05,
+                message: format!("installing {label}…"),
+            });
+
+            let mut child = match Command::new("sh")
+                .args(["-lc", &cmdline])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(InstallEvent::Failed {
+                        action,
+                        error: format!("spawn failed: {e}"),
+                    });
+                    return;
+                }
+            };
+
+            // Drain stdout/stderr so the child doesn't block; bump progress on output.
+            let mut lines = 0u32;
+            if let Some(out) = child.stdout.take() {
+                let reader = BufReader::new(out);
+                for line in reader.lines().flatten() {
+                    lines = lines.saturating_add(1);
+                    let frac = (0.08 + (lines as f32) * 0.04).min(0.92);
+                    let msg = if line.len() > 64 {
+                        format!("{}…", &line[..61])
+                    } else {
+                        line
+                    };
+                    if tx
+                        .send(InstallEvent::Progress {
+                            action,
+                            fraction: frac,
+                            message: msg,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+            if let Some(err) = child.stderr.take() {
+                let reader = BufReader::new(err);
+                for line in reader.lines().flatten() {
+                    lines = lines.saturating_add(1);
+                    let frac = (0.08 + (lines as f32) * 0.03).min(0.95);
+                    let msg = if line.len() > 64 {
+                        format!("{}…", &line[..61])
+                    } else {
+                        line
+                    };
+                    let _ = tx.send(InstallEvent::Progress {
+                        action,
+                        fraction: frac,
+                        message: msg,
+                    });
+                }
+            }
+
+            match child.wait() {
+                Ok(status) if status.success() => {
+                    let _ = tx.send(InstallEvent::Done { action });
+                }
+                Ok(status) => {
+                    let _ = tx.send(InstallEvent::Failed {
+                        action,
+                        error: format!("install exited {status}"),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(InstallEvent::Failed {
+                        action,
+                        error: format!("wait failed: {e}"),
+                    });
+                }
+            }
+        });
+    }
+
+    fn poll_install(&mut self) {
+        let Some(rx) = self.install_rx.as_ref() else {
+            // Linger then clear finished bar.
+            if let Some(ui) = &self.install {
+                if let Some(done_at) = ui.finished_at {
+                    if done_at.elapsed() >= Duration::from_millis(1600) {
+                        self.install = None;
+                    }
+                }
+            }
+            return;
+        };
+
+        loop {
+            match rx.try_recv() {
+                Ok(InstallEvent::Progress {
+                    action,
+                    fraction,
+                    message,
+                }) => {
+                    self.install = Some(InstallUi {
+                        action,
+                        fraction,
+                        message,
+                        finished_at: None,
+                        failed: false,
+                    });
+                }
+                Ok(InstallEvent::Done { action }) => {
+                    self.install = Some(InstallUi {
+                        action,
+                        fraction: 1.0,
+                        message: format!("{} ready", action.label().to_ascii_lowercase()),
+                        finished_at: Some(Instant::now()),
+                        failed: false,
+                    });
+                    self.install_rx = None;
+                    // Prefer the newly installed agent if still on that chip.
+                    if self.selected_action == action && action.is_available() {
+                        // no-op select; availability flips on next is_available()
+                    }
+                    break;
+                }
+                Ok(InstallEvent::Failed { action, error }) => {
+                    self.install = Some(InstallUi {
+                        action,
+                        fraction: 1.0,
+                        message: format!(
+                            "{} failed: {}",
+                            action.label().to_ascii_lowercase(),
+                            error.to_ascii_lowercase()
+                        ),
+                        finished_at: Some(Instant::now()),
+                        failed: true,
+                    });
+                    self.install_rx = None;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.install_rx = None;
+                    break;
+                }
+            }
+        }
+
+        if let Some(ui) = &self.install {
+            if let Some(done_at) = ui.finished_at {
+                if done_at.elapsed() >= Duration::from_millis(1600) {
+                    self.install = None;
+                }
+            }
+        }
+    }
+
+    fn action_at_mouse(&self, column: u16, row: u16) -> Option<Action> {
+        if row != self.hitboxes.action_row {
+            return None;
+        }
+        for (start, end, action) in &self.hitboxes.actions {
+            if column >= *start && column <= *end {
+                return Some(*action);
+            }
+        }
+        None
+    }
+
+    fn on_hover_action(&mut self, action: Option<Action>) {
+        match action {
+            Some(a) if !a.is_available() && a != Action::Shell && install_recipe(a).is_some() => {
+                match self.hover_missing {
+                    Some((prev, _)) if prev == a => {}
+                    _ => {
+                        self.hover_missing = Some((a, Instant::now()));
+                    }
+                }
+            }
+            _ => {
+                self.hover_missing = None;
+            }
+        }
+    }
+
+    fn tick_hover_install(&mut self) {
+        const DWELL: Duration = Duration::from_millis(400);
+        let Some((action, since)) = self.hover_missing else {
+            return;
+        };
+        if since.elapsed() >= DWELL && !self.install_busy() && !action.is_available() {
+            self.start_install(action);
+        }
     }
 
     fn settings_item_count() -> usize {
@@ -940,13 +1214,19 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
     loop {
         app.tick_status();
+        app.poll_install();
+        app.tick_hover_install();
         terminal.draw(|frame| match app.screen {
             Screen::Picker => draw(frame, &mut app),
             Screen::Settings => draw_settings(frame, &mut app),
         })?;
 
-        // Poll shorter while a status flash is visible so it clears on time.
-        let poll_ms = if app.status.is_some() { 50 } else { 250 };
+        // Poll shorter while a status flash or install bar is active.
+        let poll_ms = if app.status.is_some() || app.install.is_some() {
+            40
+        } else {
+            250
+        };
         if !event::poll(Duration::from_millis(poll_ms))? {
             continue;
         }
@@ -984,6 +1264,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     app.clear_filter();
                 }
                 KeyCode::Enter => {
+                    // Missing agent with a recipe → install instead of failing launch.
+                    if app.selected_action != Action::Shell && !app.selected_action.is_available()
+                    {
+                        app.start_install(app.selected_action);
+                        continue;
+                    }
                     if let Some(launch) = app.selected_launch() {
                         app.prepare_launch(&launch);
                         return Ok(Some(launch));
@@ -996,6 +1282,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 KeyCode::Left | KeyCode::BackTab => app.select_previous_action(),
                 KeyCode::Char(value @ '1'..='9') => {
                     app.select_action_by_number(value.to_digit(10).unwrap_or(0) as u8);
+                    if app.selected_action != Action::Shell && !app.selected_action.is_available()
+                    {
+                        app.start_install(app.selected_action);
+                    }
                 }
                 KeyCode::Char(' ') if app.filter.is_empty() => {
                     app.clear_status();
@@ -1036,14 +1326,25 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             Event::Mouse(mouse) if app.screen == Screen::Picker => match mouse.kind {
                 MouseEventKind::ScrollDown => app.select_next_repo(),
                 MouseEventKind::ScrollUp => app.select_previous_repo(),
+                MouseEventKind::Moved => {
+                    let hovered = app.action_at_mouse(mouse.column, mouse.row);
+                    app.on_hover_action(hovered);
+                }
                 MouseEventKind::Down(MouseButton::Left) => {
+                    let mut hit_action = None;
                     for (start, end, action) in &app.hitboxes.actions {
                         if mouse.row == app.hitboxes.action_row
                             && mouse.column >= *start
                             && mouse.column <= *end
                         {
-                            app.selected_action = *action;
+                            hit_action = Some(*action);
                             break;
+                        }
+                    }
+                    if let Some(action) = hit_action {
+                        app.selected_action = action;
+                        if !action.is_available() && action != Action::Shell {
+                            app.start_install(action);
                         }
                     }
 
@@ -1053,7 +1354,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             app.offset + usize::from(mouse.row - app.hitboxes.list_top);
                         if clicked_visible < app.visible_repos.len() {
                             if clicked_visible == app.selected_visible {
-                                if let Some(launch) = app.selected_launch() {
+                                if app.selected_action != Action::Shell
+                                    && !app.selected_action.is_available()
+                                {
+                                    app.start_install(app.selected_action);
+                                } else if let Some(launch) = app.selected_launch() {
                                     app.prepare_launch(&launch);
                                     return Ok(Some(launch));
                                 }
@@ -1072,6 +1377,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
 fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = centered_rect(frame.area());
+    app.panel_area = area;
     let block = Block::default()
         .title(format!(" {APP_NAME} "))
         .borders(Borders::ALL)
@@ -1110,7 +1416,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Line::from(Span::styled(status.clone(), Style::default().fg(ACCENT)))
     } else {
         Line::from(Span::styled(
-            "e editor · f finder · c copy · g github · dim app = missing cli",
+            "e editor · f finder · c copy · g github · hover dim app to install",
             Style::default().fg(Color::DarkGray),
         ))
     };
@@ -1132,6 +1438,123 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         footer_second,
     ]);
     frame.render_widget(footer, chunks[4]);
+
+    draw_install_bar(frame, app);
+}
+
+fn draw_install_bar(frame: &mut Frame<'_>, app: &App) {
+    let Some(ui) = &app.install else {
+        return;
+    };
+    let panel = app.panel_area;
+    let screen = frame.area();
+    // Place just below the main panel when there's room; otherwise clamp to bottom.
+    let y = (panel.y + panel.height).min(screen.height.saturating_sub(2));
+    if y + 1 >= screen.height {
+        return;
+    }
+    let bar_area = Rect {
+        x: panel.x,
+        y,
+        width: panel.width.max(10),
+        height: 2,
+    };
+    if bar_area.y + bar_area.height > screen.y + screen.height {
+        return;
+    }
+
+    let label = ui.action.label().to_ascii_lowercase();
+    let pct = (ui.fraction * 100.0).round() as u16;
+    let head = if ui.failed {
+        format!("install {label} failed")
+    } else if ui.finished_at.is_some() {
+        format!("install {label} done")
+    } else {
+        format!("installing {label}  {pct}%")
+    };
+    let msg = if ui.message.len() > bar_area.width as usize {
+        format!("{}…", &ui.message[..bar_area.width.saturating_sub(1) as usize])
+    } else {
+        ui.message.clone()
+    };
+
+    let color = if ui.failed {
+        Color::Red
+    } else {
+        ACCENT
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(head, Style::default().fg(color)))),
+        Rect {
+            x: bar_area.x,
+            y: bar_area.y,
+            width: bar_area.width,
+            height: 1,
+        },
+    );
+
+    let inner_w = bar_area.width.saturating_sub(2) as usize;
+    let filled = ((ui.fraction * inner_w as f32).round() as usize).min(inner_w);
+    let bar = format!(
+        "[{}{}]",
+        "█".repeat(filled),
+        "░".repeat(inner_w.saturating_sub(filled))
+    );
+    // Prefer showing live install log line if it fits; else the bar.
+    let line2 = if !msg.is_empty() && ui.finished_at.is_none() && !ui.failed {
+        msg
+    } else {
+        bar
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            line2,
+            Style::default().fg(color),
+        ))),
+        Rect {
+            x: bar_area.x,
+            y: bar_area.y + 1,
+            width: bar_area.width,
+            height: 1,
+        },
+    );
+}
+
+/// Known install recipes for missing agent CLIs (run via `sh -lc`).
+fn install_recipe(action: Action) -> Option<String> {
+    match action {
+        Action::Codex => Some("npm install -g @openai/codex".into()),
+        Action::Claude => Some("npm install -g @anthropic-ai/claude-code".into()),
+        Action::Pi => Some("npm install -g @earendil-works/pi-coding-agent".into()),
+        Action::Cursor => {
+            // Official Cursor Agent CLI install (when available).
+            Some(
+                "curl -fsSL https://cursor.com/install | bash || npm install -g @cursor/agent 2>/dev/null || true; command -v agent || command -v cursor-agent"
+                    .into(),
+            )
+        }
+        Action::Grok => {
+            // Grok CLI is often installed via the official script when present.
+            Some(
+                "curl -fsSL https://x.ai/install.sh | bash 2>/dev/null || curl -fsSL https://install.x.ai | bash 2>/dev/null || echo 'install grok manually from docs.x.ai'"
+                    .into(),
+            )
+        }
+        Action::Amp => Some(
+            "curl -fsSL https://ampcode.com/install.sh | bash 2>/dev/null || npm install -g @sourcegraph/amp 2>/dev/null || echo 'install amp manually'"
+                .into(),
+        ),
+        Action::Devin => Some(
+            "curl -fsSL https://cli.devin.ai/install.sh | bash 2>/dev/null || echo 'install devin manually from docs'"
+                .into(),
+        ),
+        Action::Droid => Some(
+            "curl -fsSL https://app.factory.ai/cli | bash 2>/dev/null || echo 'install droid/factory cli manually'"
+                .into(),
+        ),
+        Action::Shell => None,
+    }
 }
 
 fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
