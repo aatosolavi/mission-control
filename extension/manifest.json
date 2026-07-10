@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Launchpad",
+  "name": "T-0",
   "version": "0.2.0",
-  "description": "Launchpad — real terminal as a browser tab (xterm.js + local PTY). Pick a workspace, launch an agent.",
+  "description": "T-0 — real terminal as a browser tab (xterm.js + local PTY). Pick a workspace, launch an agent.",
   "chrome_url_overrides": {
     "newtab": "newtab.html"
   },
@@ -12,6 +12,6 @@
   "permissions": ["tabs", "scripting", "storage"],
   "host_permissions": ["<all_urls>"],
   "action": {
-    "default_title": "Open Launchpad"
+    "default_title": "Open T-0"
   }
 }

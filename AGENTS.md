@@ -1,6 +1,6 @@
-# Launchpad — agent notes
+# T-0 — agent notes
 
-Product UI name: **Launchpad**. Repo/package/data still `mission-control` / `mc`.
+Product UI name: **T-0**. Repo/package/data still `mission-control` / `mc`.
 
 This repo is **browser terminal only** (not a Next.js app).
 
@@ -10,7 +10,7 @@ This repo is **browser terminal only** (not a Next.js app).
 - **PTY broker:** `terminal/pty-server.mjs` on `127.0.0.1:4322` (must run under Node)
 - **HTML server:** `terminal/server.ts` on `:4321` (Bun; re-reads `index.html` each request)
 - **Process supervisor:** `terminal/start.mjs` (LaunchAgent entry)
-- **Launchpad TUI (`mc`):** `terminal/launcher-ratatui` → data-dir `bin/mc`
+- **T-0 TUI (`mc`):** `terminal/launcher-ratatui` → data-dir `bin/mc`
 
 ## Commands
 

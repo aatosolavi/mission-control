@@ -101,8 +101,8 @@ console.log(`[terminal] PATH shim available at ${pathShim}`);
 mkdirSync(shellIntegrationDir, { recursive: true });
 writeFileSync(
   zshIntegration,
-  `# Launchpad (mc) shell integration.
-# This wrapper lets Launchpad selections cd the parent shell before
+  `# T-0 (mc) shell integration.
+# This wrapper lets T-0 selections cd the parent shell before
 # launching a shell or agent. Herdr and other terminal managers can then observe
 # the cwd change.
 mc() {

@@ -33,10 +33,10 @@ use std::os::unix::process::CommandExt;
 const MAX_WIDTH: u16 = 92;
 const MAX_RECENTS: usize = 20;
 const MAX_FAVORITES: usize = 20;
-/// Product name (SpaceX-flavored: the pad where agents launch).
-const APP_NAME: &str = "Launchpad";
+/// Product name (SpaceX-flavored: countdown to liftoff — agents go at T-0).
+const APP_NAME: &str = "T-0";
 /// Splash / brand line.
-const APP_TAGLINE: &str = "all systems go";
+const APP_TAGLINE: &str = "go for launch";
 /// Accent — orange-500 (#f97316), a little heat for the pad.
 const ACCENT: Color = Color::Rgb(249, 115, 22);
 /// Text on filled accent chips (dark enough for contrast on orange).

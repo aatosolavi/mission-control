@@ -1,6 +1,6 @@
 # Security
 
-Launchpad is a **local full shell** in the browser.
+T-0 is a **local full shell** in the browser.
 
 ## Threat model
 

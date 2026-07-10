@@ -1,6 +1,6 @@
-# Launchpad (Ratatui)
+# T-0 (Ratatui)
 
-Native **Launchpad** UI for the browser terminal — pick a workspace, launch an agent.
+Native **T-0** UI for the browser terminal — pick a workspace, launch an agent.
 
 It runs inside the PTY, so xterm.js only has to be a terminal. Keyboard and mouse events go through the terminal protocol instead of a browser overlay.
 
@@ -25,7 +25,7 @@ terminal/launcher-ratatui/target/release/mc
 
 Set `GROK_TERMINAL_USE_LAUNCHER=0` to force the old shell-first behavior.
 
-Cold-start splash (“Launchpad · all systems go”, once per `mc` process, skipped when returning from an agent). Disable with `MC_SPLASH=0`.
+Cold-start splash (“T-0 · go for launch”, once per `mc` process, skipped when returning from an agent). Disable with `MC_SPLASH=0`.
 
 ## Controls
 

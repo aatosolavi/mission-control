@@ -1,21 +1,21 @@
-# Launchpad
+# T-0
 
 **A real local terminal in a browser tab** — plus a pad for workspaces and coding agents.
 
 Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Cursor, Grok, Amp, Devin, Droid, or a plain shell.
 
-> All systems go — workspaces in, agents out.
+> T-0 — countdown done. Workspaces in, agents out.
 
-![Launchpad](https://img.shields.io/badge/local--first-orange) ![MIT](https://img.shields.io/badge/license-MIT-blue) ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
+![T-0](https://img.shields.io/badge/local--first-orange) ![MIT](https://img.shields.io/badge/license-MIT-blue) ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
 
-> **Repo / CLI:** `mission-control` / `mc` · **Product name:** Launchpad
+> **Repo / CLI:** `mission-control` / `mc` · **Product name:** T-0
 
 <p align="center">
-  <img src="docs/assets/launchpad.png" alt="Launchpad workspace and agent picker" width="900" />
+  <img src="docs/assets/launchpad.png" alt="T-0 workspace and agent picker" width="900" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/launchpad-tabs.png" alt="Launchpad browser tabs with agent session" width="900" />
+  <img src="docs/assets/launchpad-tabs.png" alt="T-0 browser tabs with agent session" width="900" />
 </p>
 
 ## Install (macOS)
@@ -58,11 +58,11 @@ bun run terminal
 |---|---|
 | Browser UI | xterm.js full-page terminal, light/dark/system, orange accent |
 | PTY broker | Real shell over WebSocket on **127.0.0.1:4322** |
-| `mc` (Launchpad) | Filter workspaces, pick agent, go |
+| `mc` (T-0) | Filter workspaces, pick agent, go |
 | Sessions | Reload reattaches; idle retain across laptop sleep |
 | Helium extension | `extension/` → Cmd+T becomes a terminal |
 
-### Launchpad keys (`mc`)
+### T-0 keys (`mc`)
 
 | Key | App |
 |-----|-----|
@@ -130,7 +130,7 @@ Please read [CONTRIBUTING.md](./CONTRIBUTING.md). Short version: **humans own PR
 
 - **xterm.js** (CDN) · **@lydell/node-pty** · **ws**
 - **Bun** HTML server · **Node** PTY broker
-- **Rust / Ratatui** Launchpad UI
+- **Rust / Ratatui** T-0 UI
 
 ## License
 

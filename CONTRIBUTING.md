@@ -1,4 +1,4 @@
-# Contributing to Launchpad
+# Contributing to T-0
 
 Thanks for helping. This project is intentionally small: a **browser terminal** + **`mc` workspace/agent pad**. Keep that focus.
 
@@ -39,7 +39,7 @@ bun run terminal:launcher:build
 | `terminal/index.html` | Browser UI (xterm.js) |
 | `terminal/server.ts` | Bun HTML + uploads (:4321) |
 | `terminal/pty-server.mjs` | Node PTY + WebSocket (:4322) |
-| `terminal/launcher-ratatui` | Launchpad TUI (`mc`) |
+| `terminal/launcher-ratatui` | T-0 TUI (`mc`) |
 | `extension/` | Helium/Chrome new-tab redirect |
 
 ## Pull requests
@@ -51,7 +51,7 @@ bun run terminal:launcher:build
 
 ### AI-assisted contributions (read this)
 
-Open source maintainers are drowning in low-quality agent PRs. Launchpad is built *for* tokenmaxxers — that does **not** mean unreviewed agent spam is welcome.
+Open source maintainers are drowning in low-quality agent PRs. T-0 is built *for* tokenmaxxers — that does **not** mean unreviewed agent spam is welcome.
 
 **Allowed**
 
