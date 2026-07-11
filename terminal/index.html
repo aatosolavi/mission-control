@@ -465,11 +465,11 @@
       }
     }
 
-    // Connect to the real PTY broker (must run under Node, not Bun)
-    // The Bun server on :4321 only serves the page. The actual shell lives on :4322.
+    // The PTY is served same-origin at /pty (the Bun server proxies to the
+    // Node broker), so this also works behind a fronting proxy like
+    // portless (https://t0.localhost).
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ptyHost = location.hostname || 'localhost';
-    const wsUrl = `${protocol}//${ptyHost}:4322`;
+    const wsUrl = `${protocol}//${location.host}/pty`;
     let ws;
 
     function randomSessionId() {

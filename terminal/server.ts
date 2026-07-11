@@ -32,8 +32,12 @@ const ALLOWED_ORIGINS = new Set(
       `http://localhost:${PORT}`,
       "http://127.0.0.1:4321",
       "http://localhost:4321",
+      // portless (https://portless.sh) fronts us at a stable https name.
+      "https://t0.localhost",
     ]),
 );
+const PTY_PORT = Number(process.env.MC_PTY_PORT || 4322);
+const PTY_URL = `ws://127.0.0.1:${PTY_PORT}`;
 
 function resolveDataDir(): string {
   return dataDir();
@@ -58,7 +62,9 @@ function securityHeaders(nonce: string): Record<string, string> {
       `script-src 'self' 'nonce-${nonce}'`,
       // xterm positions terminal cells with inline styles; keep scripts nonce-locked.
       "style-src 'self' 'unsafe-inline'",
-      "connect-src 'self' ws://127.0.0.1:4322 ws://localhost:4322",
+      // The PTY is proxied same-origin at /pty; ws:// forms spelled out for
+      // browsers that don't extend 'self' to websockets.
+      `connect-src 'self' ws://127.0.0.1:${PORT} ws://localhost:${PORT}`,
       "img-src 'self' data:",
       "font-src 'self'",
       "object-src 'none'",
@@ -111,8 +117,22 @@ const server = Bun.serve({
   port: PORT,
   maxRequestBodySize: MAX_ATTACHMENT_TOTAL_BYTES,
 
-  async fetch(req: Request) {
+  async fetch(req: Request, srv) {
     const url = new URL(req.url);
+
+    // Same-origin PTY endpoint → proxied to the Node broker on PTY_PORT.
+    // Lets a single fronting URL (e.g. https://t0.localhost via portless)
+    // carry both the page and the terminal websocket.
+    if (url.pathname === "/pty") {
+      if (!originAllowed(req)) {
+        return new Response("Origin not allowed", { status: 403 });
+      }
+      const data = { broker: null as WebSocket | null, pending: [] as (string | Uint8Array<ArrayBuffer>)[] };
+      if (srv.upgrade(req, { data: data as never })) {
+        return undefined;
+      }
+      return new Response("WebSocket upgrade required", { status: 426 });
+    }
 
     if (req.method === "GET" && (url.pathname === "/vendor.js" || url.pathname === "/vendor.css")) {
       const name = url.pathname.slice(1);
@@ -193,6 +213,40 @@ const server = Bun.serve({
         ...securityHeaders(nonce),
       },
     });
+  },
+
+  websocket: {
+    open(ws: any) {
+      // The browser's Origin was validated at upgrade; connect to the broker
+      // with the server's own identity, which its allowlist already trusts.
+      const broker = new WebSocket(PTY_URL, {
+        headers: { origin: `http://127.0.0.1:${PORT}` },
+      } as any);
+      ws.data.broker = broker;
+      broker.onopen = () => {
+        for (const msg of ws.data.pending) broker.send(msg);
+        ws.data.pending.length = 0;
+      };
+      broker.onmessage = (event) => ws.send(event.data);
+      broker.onclose = () => ws.close();
+      broker.onerror = () => ws.close();
+    },
+    message(ws: any, message: string | Uint8Array<ArrayBuffer>) {
+      const broker: WebSocket | null = ws.data.broker;
+      if (!broker) return;
+      if (broker.readyState === WebSocket.OPEN) {
+        broker.send(message);
+      } else if (broker.readyState === WebSocket.CONNECTING) {
+        ws.data.pending.push(message);
+      }
+    },
+    close(ws: any) {
+      try {
+        ws.data.broker?.close();
+      } catch {
+        // already closed
+      }
+    },
   },
 
 });

@@ -1,3 +1,4 @@
+// @ts-ignore — css side-effect import is for the bundler, not tsc
 import "@xterm/xterm/css/xterm.css";
 
 export { Terminal } from "@xterm/xterm";

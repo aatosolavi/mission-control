@@ -115,6 +115,16 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 
 **Launcher (`t0`)** — Settings → UI theme: `auto` / `dark` / `light`
 
+### Stable URL — `https://t0.localhost` (optional)
+
+T-0 works with [portless](https://portless.sh/) out of the box — it ships as a dev dependency and `portless.json` is in the repo. The PTY websocket is served same-origin at `/pty`, so one fronting URL carries everything:
+
+```bash
+bunx portless       # in the repo → https://t0.localhost
+```
+
+No portless? Nothing changes — `http://127.0.0.1:4321` keeps working.
+
 ### Config (env)
 
 | Variable | Default |

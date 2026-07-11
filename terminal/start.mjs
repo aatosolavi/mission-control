@@ -45,7 +45,10 @@ function shutdown(code = 0) {
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
-start("pty broker", process.execPath, ["terminal/pty-server.mjs"]);
+// PORT (e.g. from portless) is meant for the HTML server; the broker
+// would otherwise fall back to it and collide. Use MC_PTY_PORT for the broker.
+const { PORT: _port, ...brokerEnv } = process.env;
+start("pty broker", process.execPath, ["terminal/pty-server.mjs"], brokerEnv);
 start("html server", process.env.BUN_BIN || "bun", ["run", "terminal/server.ts"]);
 
 console.log("[terminal] Open http://localhost:4321");
