@@ -4,6 +4,8 @@ Product UI name: **T-0**. GitHub repo: `t-0`. CLI: **`t0`** (legacy alias `mc`).
 
 This repo is **browser terminal only** (not a Next.js app).
 
+**Installing T-0 for a user (not editing this repo):** follow [docs/for-coding-agents.md](./docs/for-coding-agents.md) or the skill [skills/install-t0/SKILL.md](./skills/install-t0/SKILL.md).
+
 ## What matters
 
 - **Product surface:** `http://127.0.0.1:4321` — full-page xterm + real local PTY

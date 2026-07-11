@@ -1,5 +1,7 @@
 # Browser Terminal Notes
 
+Agent install playbook: [for-coding-agents.md](./for-coding-agents.md) · skill: [`skills/install-t0`](../skills/install-t0/SKILL.md).
+
 **T-0** is a real local shell inside a browser tab:
 
 - HTML server: `http://127.0.0.1:4321` (bind host configurable via `MC_BIND_HOST`)

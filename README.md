@@ -126,6 +126,14 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 | `MC_DEMO` / `MC_MOCK` | `1` = fake workspaces for marketing screenshots |
 | `GROK_TERMINAL_*_COMMAND` | override agent CLI paths |
 
+## For coding agents
+
+If another agent is installing or debugging T-0 for a human:
+
+- Playbook: [docs/for-coding-agents.md](./docs/for-coding-agents.md)
+- Portable skill: [skills/install-t0/SKILL.md](./skills/install-t0/SKILL.md)  
+  Copy into the host skill dir (e.g. `~/.grok/skills/install-t0/`) for auto-invocation / `/install-t0`.
+
 ## Security
 
 This is a **full shell as your user**, bound to **localhost only**. Do not expose ports 4321/4322. See [SECURITY.md](./SECURITY.md).
