@@ -131,8 +131,8 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 If another agent is installing or debugging T-0 for a human:
 
 - Playbook: [docs/for-coding-agents.md](./docs/for-coding-agents.md)
-- Portable skill: [skills/install-t0/SKILL.md](./skills/install-t0/SKILL.md)  
-  Copy into the host skill dir (e.g. `~/.grok/skills/install-t0/`) for auto-invocation / `/install-t0`.
+- Skill: [.agents/skills/install-t0/SKILL.md](./.agents/skills/install-t0/SKILL.md)  
+  Copy into the host skill dir (e.g. `~/.agents/skills/install-t0/`) for auto-invocation / `/install-t0`.
 
 ## Security
 

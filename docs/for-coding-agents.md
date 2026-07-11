@@ -2,7 +2,7 @@
 
 This page is the **canonical playbook** for agents (Grok, Claude, Cursor, Codex, etc.) helping a human install or debug **T-0** on macOS.
 
-Also available as a portable skill: [`skills/install-t0/SKILL.md`](../skills/install-t0/SKILL.md) (copy into the user’s agent skill dir if they want auto-invocation).
+Also available as a skill: [`.agents/skills/install-t0/SKILL.md`](../.agents/skills/install-t0/SKILL.md) (copy into `~/.agents/skills/install-t0/` for auto-invocation).
 
 ## What T-0 is
 
@@ -90,11 +90,10 @@ Do **not** reintroduce a Next.js dashboard without explicit product direction.
 ## Copy this skill into an agent host
 
 ```bash
-# Grok (user skills)
-mkdir -p ~/.grok/skills/install-t0
-cp /path/to/t-0/skills/install-t0/SKILL.md ~/.grok/skills/install-t0/
-
-# Or keep the clone and point the host at skills/install-t0/
+mkdir -p ~/.agents/skills/install-t0
+cp /path/to/t-0/.agents/skills/install-t0/SKILL.md ~/.agents/skills/install-t0/
 ```
+
+Or keep the clone and point the host at `.agents/skills/install-t0/`.
 
 Trigger phrases: “install T-0”, “set up browser terminal”, “install t0”, “mission control terminal”.

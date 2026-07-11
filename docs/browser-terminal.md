@@ -1,6 +1,6 @@
 # Browser Terminal Notes
 
-Agent install playbook: [for-coding-agents.md](./for-coding-agents.md) · skill: [`skills/install-t0`](../skills/install-t0/SKILL.md).
+Agent install playbook: [for-coding-agents.md](./for-coding-agents.md) · skill: [`.agents/skills/install-t0`](../.agents/skills/install-t0/SKILL.md).
 
 **T-0** is a real local shell inside a browser tab:
 
