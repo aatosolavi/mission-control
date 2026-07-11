@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+/**
+ * Build + install the T-0 launcher (`t0`).
+ * Legacy `mc` shims are kept so old muscle memory / scripts still work.
+ */
+
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -17,20 +22,25 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { dataDir } from "./data-dir.mjs";
 
+const BIN_NAME = "t0";
+const LEGACY_BIN_NAME = "mc";
+
 const root = process.cwd();
 const home = process.env.HOME || root;
 const resolvedDataDir = dataDir(home);
 const releaseBinary = join(
   root,
-  "terminal/launcher-ratatui/target/release/mc",
+  `terminal/launcher-ratatui/target/release/${BIN_NAME}`,
 );
 const installDir = join(resolvedDataDir, "bin");
-const installedBinary = join(installDir, "mc");
-const tempInstalledBinary = join(installDir, `.mc-${process.pid}.tmp`);
+const installedBinary = join(installDir, BIN_NAME);
+const legacyInstalledBinary = join(installDir, LEGACY_BIN_NAME);
+const tempInstalledBinary = join(installDir, `.${BIN_NAME}-${process.pid}.tmp`);
 const pathShimDir = join(home, ".local", "bin");
-const pathShim = join(pathShimDir, "mc");
+const pathShim = join(pathShimDir, BIN_NAME);
+const legacyPathShim = join(pathShimDir, LEGACY_BIN_NAME);
 const shellIntegrationDir = join(resolvedDataDir, "shell");
-const zshIntegration = join(shellIntegrationDir, "mc.zsh");
+const zshIntegration = join(shellIntegrationDir, "t0.zsh");
 const zshrc = join(home, ".zshrc");
 
 const rustc = spawnSync("rustup", ["which", "rustc"], {
@@ -75,128 +85,152 @@ copyFileSync(releaseBinary, tempInstalledBinary);
 chmodSync(tempInstalledBinary, 0o755);
 renameSync(tempInstalledBinary, installedBinary);
 
-console.log(`[terminal] Installed Ratatui launcher to ${installedBinary}`);
-
-mkdirSync(pathShimDir, { recursive: true });
+// Legacy name → same binary (PATH + muscle memory).
 try {
-  const existing = lstatSync(pathShim);
-  if (existing.isSymbolicLink()) {
-    const target = readlinkSync(pathShim);
-    if (target !== installedBinary) {
-      unlinkSync(pathShim);
-      symlinkSync(installedBinary, pathShim);
+  unlinkSync(legacyInstalledBinary);
+} catch {
+  // ignore
+}
+symlinkSync(BIN_NAME, legacyInstalledBinary);
+
+console.log(`[terminal] Installed T-0 launcher to ${installedBinary}`);
+console.log(`[terminal] Legacy alias: ${legacyInstalledBinary} → ${BIN_NAME}`);
+
+function ensureShim(shimPath, target) {
+  mkdirSync(pathShimDir, { recursive: true });
+  try {
+    const existing = lstatSync(shimPath);
+    if (existing.isSymbolicLink()) {
+      const current = readlinkSync(shimPath);
+      if (current !== target) {
+        unlinkSync(shimPath);
+        symlinkSync(target, shimPath);
+      }
+    } else {
+      console.warn(
+        `[terminal] Skipped PATH shim because ${shimPath} already exists and is not a symlink`,
+      );
+      return;
     }
-  } else {
-    console.warn(`[terminal] Skipped PATH shim because ${pathShim} already exists`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    symlinkSync(target, shimPath);
   }
-} catch (error) {
-  if (error?.code !== "ENOENT") {
-    throw error;
-  }
-  symlinkSync(installedBinary, pathShim);
+  console.log(`[terminal] PATH shim available at ${shimPath}`);
 }
 
-console.log(`[terminal] PATH shim available at ${pathShim}`);
+ensureShim(pathShim, installedBinary);
+ensureShim(legacyPathShim, installedBinary);
 
 mkdirSync(shellIntegrationDir, { recursive: true });
 writeFileSync(
   zshIntegration,
-  `# T-0 (mc) shell integration.
-# This wrapper lets T-0 selections cd the parent shell before
-# launching a shell or agent. Herdr and other terminal managers can then observe
-# the cwd change.
-mc() {
-  local _mc_bin="\${MC_LAUNCHER:-}"
-  if [[ -z "\$_mc_bin" ]]; then
-    if [[ -x "\$HOME/.mission-control/bin/mc" ]]; then
-      _mc_bin="\$HOME/.mission-control/bin/mc"
+  `# T-0 shell integration (\`t0\`; \`mc\` is a legacy alias).
+# Lets T-0 selections cd the parent shell before launching a shell or agent.
+t0() {
+  local _t0_bin="\${MC_LAUNCHER:-}"
+  if [[ -z "\$_t0_bin" ]]; then
+    if [[ -x "\$HOME/.mission-control/bin/t0" ]]; then
+      _t0_bin="\$HOME/.mission-control/bin/t0"
+    elif [[ -x "\$HOME/.mission-control/bin/mc" ]]; then
+      _t0_bin="\$HOME/.mission-control/bin/mc"
+    elif [[ -x "\$HOME/.grok-mission-control/bin/mc" ]]; then
+      _t0_bin="\$HOME/.grok-mission-control/bin/mc"
     else
-      _mc_bin="\$HOME/.grok-mission-control/bin/mc"
+      _t0_bin="t0"
     fi
   fi
-  local _mc_cd_file="\${TMPDIR:-/tmp}/mc-cd-$$"
+  local _t0_cd_file="\${TMPDIR:-/tmp}/t0-cd-$$"
 
-  MC_SHELL_INTEGRATION=1 MC_CD_FILE="\$_mc_cd_file" "\$_mc_bin" "\$@"
-  local _mc_status=\$?
+  MC_SHELL_INTEGRATION=1 MC_CD_FILE="\$_t0_cd_file" "\$_t0_bin" "\$@"
+  local _t0_status=\$?
 
-  if [[ \$_mc_status -eq 0 && -s "\$_mc_cd_file" ]]; then
-    local _mc_action="shell"
-    local _mc_target
-    while IFS='=' read -r _mc_key _mc_value; do
-      case "\$_mc_key" in
-        action) _mc_action="\$_mc_value" ;;
-        cwd) _mc_target="\$_mc_value" ;;
+  if [[ \$_t0_status -eq 0 && -s "\$_t0_cd_file" ]]; then
+    local _t0_action="shell"
+    local _t0_target
+    while IFS='=' read -r _t0_key _t0_value; do
+      case "\$_t0_key" in
+        action) _t0_action="\$_t0_value" ;;
+        cwd) _t0_target="\$_t0_value" ;;
       esac
-    done < "\$_mc_cd_file"
-    if [[ -z "\$_mc_target" ]]; then
-      _mc_target="\$(cat "\$_mc_cd_file")"
+    done < "\$_t0_cd_file"
+    if [[ -z "\$_t0_target" ]]; then
+      _t0_target="\$(cat "\$_t0_cd_file")"
     fi
-    rm -f "\$_mc_cd_file"
-    if [[ -n "\$_mc_target" && -d "\$_mc_target" ]]; then
-      builtin cd "\$_mc_target"
+    rm -f "\$_t0_cd_file"
+    if [[ -n "\$_t0_target" && -d "\$_t0_target" ]]; then
+      builtin cd "\$_t0_target"
     fi
 
-    case "\$_mc_action" in
+    case "\$_t0_action" in
       shell)
         ;;
       codex)
-        local _mc_codex_command="\${GROK_TERMINAL_CODEX_COMMAND:-codex}"
-        eval "\$_mc_codex_command"
+        local _t0_cmd="\${GROK_TERMINAL_CODEX_COMMAND:-codex}"
+        eval "\$_t0_cmd"
         return \$?
         ;;
       grok)
-        local _mc_grok_command="\${GROK_TERMINAL_GROK_COMMAND:-grok}"
-        eval "\$_mc_grok_command"
+        local _t0_cmd="\${GROK_TERMINAL_GROK_COMMAND:-grok}"
+        eval "\$_t0_cmd"
         return \$?
         ;;
       pi)
-        local _mc_pi_command="\${GROK_TERMINAL_PI_COMMAND:-pi}"
-        eval "\$_mc_pi_command"
+        local _t0_cmd="\${GROK_TERMINAL_PI_COMMAND:-pi}"
+        eval "\$_t0_cmd"
         return \$?
         ;;
       cursor)
-        local _mc_cursor_command="\${GROK_TERMINAL_CURSOR_COMMAND:-agent}"
-        eval "\$_mc_cursor_command"
+        local _t0_cmd="\${GROK_TERMINAL_CURSOR_COMMAND:-agent}"
+        eval "\$_t0_cmd"
         return \$?
         ;;
       claude)
-        local _mc_claude_command="\${GROK_TERMINAL_CLAUDE_COMMAND:-claude}"
-        eval "\$_mc_claude_command"
+        local _t0_cmd="\${GROK_TERMINAL_CLAUDE_COMMAND:-claude}"
+        eval "\$_t0_cmd"
         return \$?
         ;;
       amp)
-        local _mc_amp_command="\${GROK_TERMINAL_AMP_COMMAND:-amp}"
-        eval "\$_mc_amp_command"
+        local _t0_cmd="\${GROK_TERMINAL_AMP_COMMAND:-amp}"
+        eval "\$_t0_cmd"
         return \$?
         ;;
       devin)
-        local _mc_devin_command="\${GROK_TERMINAL_DEVIN_COMMAND:-devin}"
-        eval "\$_mc_devin_command"
+        local _t0_cmd="\${GROK_TERMINAL_DEVIN_COMMAND:-devin}"
+        eval "\$_t0_cmd"
         return \$?
         ;;
       droid)
-        local _mc_droid_command="\${GROK_TERMINAL_DROID_COMMAND:-droid}"
-        eval "\$_mc_droid_command"
+        local _t0_cmd="\${GROK_TERMINAL_DROID_COMMAND:-droid}"
+        eval "\$_t0_cmd"
         return \$?
         ;;
     esac
   else
-    rm -f "\$_mc_cd_file"
+    rm -f "\$_t0_cd_file"
   fi
 
-  return \$_mc_status
+  return \$_t0_status
 }
+
+# Legacy alias — same function.
+mc() { t0 "\$@"; }
 `,
 );
 
+// Prefer modern t0.zsh block; keep legacy mc.zsh marker compatible.
 const sourceBlock = `
-# >>> mission-control mc integration >>>
-if [ -s "$HOME/.mission-control/shell/mc.zsh" ]; then
+# >>> t-0 launcher integration >>>
+if [ -s "$HOME/.mission-control/shell/t0.zsh" ]; then
+  source "$HOME/.mission-control/shell/t0.zsh"
+elif [ -s "$HOME/.mission-control/shell/mc.zsh" ]; then
   source "$HOME/.mission-control/shell/mc.zsh"
 elif [ -s "$HOME/.grok-mission-control/shell/mc.zsh" ]; then
   source "$HOME/.grok-mission-control/shell/mc.zsh"
 fi
-# <<< mission-control mc integration <<<
+# <<< t-0 launcher integration <<<
 `;
 
 let existingZshrc = "";
@@ -208,8 +242,21 @@ try {
   }
 }
 
-if (!existingZshrc.includes("mission-control mc integration")) {
+if (
+  !existingZshrc.includes("t-0 launcher integration") &&
+  !existingZshrc.includes("mission-control mc integration")
+) {
   writeFileSync(zshrc, `${existingZshrc.trimEnd()}\n${sourceBlock}`);
+} else if (
+  existingZshrc.includes("mission-control mc integration") &&
+  !existingZshrc.includes("t-0 launcher integration")
+) {
+  // Upgrade old zshrc block to prefer t0.zsh.
+  const upgraded = existingZshrc.replace(
+    /# >>> mission-control mc integration >>>[\s\S]*?# <<< mission-control mc integration <<</,
+    sourceBlock.trim(),
+  );
+  writeFileSync(zshrc, upgraded);
 }
 
 console.log(`[terminal] Shell integration available at ${zshIntegration}`);

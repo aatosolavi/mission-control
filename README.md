@@ -8,7 +8,7 @@ Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Cursor, 
 
 ![T-0](https://img.shields.io/badge/local--first-orange) ![MIT](https://img.shields.io/badge/license-MIT-blue) ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
 
-> **Repo:** [`t-0`](https://github.com/aatosolavi/t-0) · **CLI:** `mc` · **Product:** T-0
+> **Repo:** [`t-0`](https://github.com/aatosolavi/t-0) · **CLI:** `t0` · **Product:** T-0
 
 <p align="center">
   <img src="docs/assets/launchpad.png" alt="T-0 workspace and agent picker" width="900" />
@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/aatosolavi/t-0/main/install.sh | ba
 git clone https://github.com/aatosolavi/t-0.git
 cd t-0
 bun install
-bun run terminal:install   # build `mc` + LaunchAgent
+bun run terminal:install   # build `t0` + LaunchAgent
 open http://127.0.0.1:4321
 ```
 
@@ -38,7 +38,7 @@ open http://127.0.0.1:4321
 |---|---|
 | **Node.js 20+** | PTY broker (`@lydell/node-pty`) |
 | **Bun** | Tiny HTML server |
-| **Rust / rustup** | Build the `mc` launcher (prebuilt binaries planned) |
+| **Rust / rustup** | Build the `t0` launcher (prebuilt binaries planned) |
 | **macOS** | LaunchAgent install path (Linux/Windows later) |
 
 Foreground without installing the agent:
@@ -54,11 +54,11 @@ bun run terminal
 |---|---|
 | Browser UI | xterm.js full-page terminal, light/dark/system, orange accent |
 | PTY broker | Real shell over WebSocket on **127.0.0.1:4322** |
-| `mc` (T-0) | Filter workspaces, pick agent, go |
+| `t0` (T-0) | Filter workspaces, pick agent, go (`mc` still works as alias) |
 | Sessions | Reload reattaches; idle retain across laptop sleep |
 | Helium extension | `extension/` → Cmd+T becomes a terminal |
 
-### T-0 keys (`mc`)
+### T-0 keys (`t0`)
 
 | Key | App |
 |-----|-----|
@@ -72,7 +72,7 @@ bun run terminal
 | 8 | Droid |
 | 9 | Shell |
 
-Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) to **install** npm-backed agents (Codex, Claude, Pi) — a progress bar appears under the panel. Script-based installers need `MC_ALLOW_SCRIPT_INSTALL=1`. From any shell: run `mc` again.
+Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) to **install** npm-backed agents (Codex, Claude, Pi) — a progress bar appears under the panel. Script-based installers need `MC_ALLOW_SCRIPT_INSTALL=1`. From any shell: run `t0` again.
 
 **Memory**
 - Last agent per workspace (auto-select on highlight)
@@ -104,7 +104,12 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 | `MC_DATA_DIR` | `~/.mission-control` (legacy `~/.grok-mission-control` is auto-migrated) |
 | `MC_BIND_HOST` | `127.0.0.1` |
 | `MC_SPLASH` | splash on cold start (`0` to disable) |
+| `MC_DEMO` / `MC_MOCK` | `1` = fake public workspaces for marketing screenshots (skips splash) |
 | `GROK_TERMINAL_*_COMMAND` | override agent CLI paths |
+
+```bash
+MC_DEMO=1 t0   # screenshot-ready picker (no personal paths)
+```
 
 ## Security
 
@@ -116,7 +121,7 @@ Ideas and PRs welcome — especially if you live in agent CLIs too.
 
 **Actively looking for help on:**
 
-1. **Finder-class UX in `mc`** — make the workspace/folder browser feel like a small Finder replacement for the launcher (navigation, jumps, keyboard/mouse polish).
+1. **Finder-class UX in `t0`** — make the workspace/folder browser feel like a small Finder replacement for the launcher (navigation, jumps, keyboard/mouse polish).
 2. **Splash + logo (ASCII)** — terminal splash animation and a solid T-0 ASCII logo. ANSI art welcome; keep it skippable and light/dark friendly.
 
 Details and constraints: [CONTRIBUTING.md](./CONTRIBUTING.md). Short version: **humans own PRs**; AI help is fine if you reviewed and ran the change. Unreviewed agent spam will be closed.

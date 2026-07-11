@@ -26,6 +26,8 @@ Set `GROK_TERMINAL_USE_LAUNCHER=0` to force the old shell-first behavior.
 
 Cold-start splash (“T-0 · go for launch”, once per `mc` process, skipped when returning from an agent). Disable with `MC_SPLASH=0`.
 
+Marketing screenshots: `MC_DEMO=1 mc` (or `MC_MOCK=1`) uses fake public-looking workspaces under `$TMPDIR/t-0-demo/` and skips the splash.
+
 ## Controls
 
 - type characters: filter workspaces by name or path

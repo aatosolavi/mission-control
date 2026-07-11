@@ -48,29 +48,21 @@ function defaultStartCwd() {
 
 const DEFAULT_START_CWD = defaultStartCwd();
 const STATE_PATH = join(DATA_DIR, "terminal-state.json");
-const INSTALLED_LAUNCHER_PATH = join(DATA_DIR, "bin/mc");
-const LEGACY_INSTALLED_LAUNCHER_PATH = join(HOME, ".grok-mission-control", "bin/mc");
-const LEGACY_LAUNCHER_NAME = join(HOME, ".grok-mission-control", "bin/grok-terminal-launcher");
-const BUILD_LAUNCHER_PATH = join(
-  process.cwd(),
-  "terminal/launcher-ratatui/target/release/mc",
-);
-const LEGACY_BUILD_LAUNCHER_PATH = join(
-  process.cwd(),
-  "terminal/launcher-ratatui/target/release/grok-terminal-launcher",
-);
-const LAUNCHER_PATH =
-  process.env.MC_LAUNCHER ||
-  process.env.GROK_TERMINAL_LAUNCHER ||
-  (existsSync(INSTALLED_LAUNCHER_PATH)
-    ? INSTALLED_LAUNCHER_PATH
-    : existsSync(LEGACY_INSTALLED_LAUNCHER_PATH)
-      ? LEGACY_INSTALLED_LAUNCHER_PATH
-      : existsSync(LEGACY_LAUNCHER_NAME)
-        ? LEGACY_LAUNCHER_NAME
-        : existsSync(BUILD_LAUNCHER_PATH)
-          ? BUILD_LAUNCHER_PATH
-          : LEGACY_BUILD_LAUNCHER_PATH);
+// Prefer t0 (product CLI); keep mc / older names as fallbacks.
+const LAUNCHER_CANDIDATES = [
+  process.env.MC_LAUNCHER,
+  process.env.GROK_TERMINAL_LAUNCHER,
+  join(DATA_DIR, "bin/t0"),
+  join(DATA_DIR, "bin/mc"),
+  join(HOME, ".mission-control", "bin/t0"),
+  join(HOME, ".mission-control", "bin/mc"),
+  join(HOME, ".grok-mission-control", "bin/mc"),
+  join(HOME, ".grok-mission-control", "bin/grok-terminal-launcher"),
+  join(process.cwd(), "terminal/launcher-ratatui/target/release/t0"),
+  join(process.cwd(), "terminal/launcher-ratatui/target/release/mc"),
+  join(process.cwd(), "terminal/launcher-ratatui/target/release/grok-terminal-launcher"),
+].filter(Boolean);
+const LAUNCHER_PATH = LAUNCHER_CANDIDATES.find((p) => existsSync(p)) || LAUNCHER_CANDIDATES.at(-1);
 const LAUNCHER_ENABLED =
   process.env.MC_USE_LAUNCHER !== "0" &&
   process.env.GROK_TERMINAL_USE_LAUNCHER !== "0" &&

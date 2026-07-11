@@ -1145,7 +1145,10 @@ impl App {
         let Some(repo) = self.selected_repo() else {
             return;
         };
-        if let Some(action) = self.state.agent_for(&repo.path) {
+        // Prefer row memory (includes demo fixtures); fall back to state map / default.
+        let from_row = repo.remembered_agent;
+        let path = repo.path.clone();
+        if let Some(action) = from_row.or_else(|| self.state.agent_for(&path)) {
             self.selected_action = action.resolve_available();
         } else {
             self.selected_action = self.state.default_action();
@@ -1435,12 +1438,83 @@ fn main() -> io::Result<()> {
 }
 
 /// Splash: env MC_SPLASH wins; else launcher-state settings.splash (default on).
+/// Demo/mock mode skips splash so marketing screenshots are instant.
 fn splash_enabled() -> bool {
+    if demo_mode_enabled() {
+        return false;
+    }
     if let Ok(value) = env::var("MC_SPLASH") {
         let v = value.trim().to_ascii_lowercase();
         return !(v == "0" || v == "off" || v == "false" || v == "no");
     }
     LauncherState::load().settings.splash
+}
+
+/// Marketing / screenshot mode: fake public-looking workspaces (no personal scan).
+/// Enable with `MC_DEMO=1` or `MC_MOCK=1`.
+fn demo_mode_enabled() -> bool {
+    for key in ["MC_DEMO", "MC_MOCK"] {
+        if let Ok(value) = env::var(key) {
+            let v = value.trim().to_ascii_lowercase();
+            if v == "1" || v == "true" || v == "yes" || v == "on" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn demo_root() -> PathBuf {
+    env::temp_dir().join("t-0-demo")
+}
+
+/// Ensure empty dirs exist so path columns and side-actions don't look broken.
+fn ensure_demo_dirs(root: &Path) {
+    let names = [
+        "northwind",
+        "payload",
+        "relay",
+        "orbit",
+        "harbor",
+        "signal",
+        "ledger",
+        "t-0",
+    ];
+    for name in names {
+        let dir = root.join(name);
+        let _ = fs::create_dir_all(&dir);
+    }
+}
+
+/// Hardcoded workspace rows for screenshots / demos (no real discovery).
+fn demo_repos() -> Vec<Repo> {
+    let root = demo_root();
+    ensure_demo_dirs(&root);
+
+    // name, dir, branch, dirty, ahead, agent, badge
+    let entries: &[(&str, &str, &str, bool, u32, Option<Action>, &str)] = &[
+        ("northwind", "northwind", "main", false, 0, Some(Action::Claude), "★"),
+        ("payload", "payload", "feature/auth", true, 2, Some(Action::Grok), "★"),
+        ("relay", "relay", "develop", false, 0, Some(Action::Cursor), "recent"),
+        ("orbit", "orbit", "main", true, 1, Some(Action::Claude), "recent"),
+        ("harbor", "harbor", "release/1.2", false, 0, Some(Action::Codex), ""),
+        ("signal", "signal", "main", false, 0, Some(Action::Grok), "last"),
+        ("ledger", "ledger", "feat/import", true, 0, Some(Action::Pi), ""),
+        ("t-0", "t-0", "main", false, 0, Some(Action::Claude), "root"),
+    ];
+
+    entries
+        .iter()
+        .map(|(name, dir, branch, dirty, ahead, agent, badge)| Repo {
+            name: (*name).to_string(),
+            path: root.join(dir),
+            badge: *badge,
+            git_branch: Some((*branch).to_string()),
+            git_dirty: *dirty,
+            git_ahead: *ahead,
+            remembered_agent: *agent,
+        })
+        .collect()
 }
 
 const SPLASH_TOTAL_MS: u64 = 750;
@@ -2435,6 +2509,10 @@ fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
 }
 
 fn discover_repos(state: &LauncherState) -> Vec<Repo> {
+    if demo_mode_enabled() {
+        return demo_repos();
+    }
+
     let home = home_dir();
     let data = data_dir();
     let root = workspace_root(&state.settings);

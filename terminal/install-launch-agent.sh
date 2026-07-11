@@ -25,7 +25,12 @@ else
 fi
 
 LOG_DIR="$DATA_DIR/logs"
-LAUNCHER_BIN="$DATA_DIR/bin/mc"
+# Prefer t0; fall back to legacy mc if present.
+if [[ -x "$DATA_DIR/bin/t0" ]]; then
+  LAUNCHER_BIN="$DATA_DIR/bin/t0"
+else
+  LAUNCHER_BIN="$DATA_DIR/bin/mc"
+fi
 BUN_BIN="$(command -v bun)"
 NODE_BIN="$(command -v node)"
 CODEX_BIN="$(command -v codex || true)"

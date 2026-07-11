@@ -456,16 +456,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grok-terminal-launcher"
-version = "0.1.0"
-dependencies = [
- "crossterm 0.28.1",
- "ratatui",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -952,9 +942,9 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
-version = "0.8.6"
+version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
 dependencies = [
  "rand_core",
 ]
@@ -1319,6 +1309,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "t0-launcher"
+version = "0.1.0"
+dependencies = [
+ "crossterm 0.28.1",
+ "ratatui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

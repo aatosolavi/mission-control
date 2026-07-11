@@ -1,10 +1,10 @@
 [package]
-name = "grok-terminal-launcher"
+name = "t0-launcher"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "mc"
+name = "t0"
 path = "src/main.rs"
 
 [dependencies]
