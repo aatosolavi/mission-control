@@ -297,10 +297,12 @@ impl Theme {
     }
 
     fn light() -> Self {
-        // Avoid Color::Rgb here: Terminal.app frequently ignores truecolor and
-        // falls back to default fg → everything looks black-on-white.
+        // Avoid Color::Rgb (Terminal.app often drops truecolor).
+        // bg = Reset, not White: ANSI "white" is usually a dingy gray/cream
+        // from the profile palette, so painting it looks "not white". Reset
+        // inherits the terminal's real background instead.
         Self {
-            bg: Color::White,
+            bg: Color::Reset,
             text: Color::Black,
             muted: Color::DarkGray,
             dim: Color::DarkGray,
