@@ -1464,8 +1464,9 @@ fn demo_mode_enabled() -> bool {
     false
 }
 
+/// Demo workspaces under `~/work/...` so path column shows clean `~/work/foo` (not /tmp).
 fn demo_root() -> PathBuf {
-    env::temp_dir().join("t-0-demo")
+    home_dir().join("work")
 }
 
 /// Ensure empty dirs exist so path columns and side-actions don't look broken.
