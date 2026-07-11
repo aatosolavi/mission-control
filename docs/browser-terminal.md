@@ -8,7 +8,7 @@
 - Accent: orange (`#f97316` / `#fb923c`)
 - Themes: **system / light / dark** — `?theme=system|light|dark`, or **⌘/Ctrl+Shift+L** to cycle (stored in `localStorage`)
 - Workspace root: `MC_WORKSPACE_ROOT` (default `~/dev` if present, else `$HOME`)
-- Data dir: `MC_DATA_DIR` → `~/.mission-control` (legacy `~/.grok-mission-control` still works)
+- State dir: `MC_DATA_DIR` → `~/.mission-control` (legacy `~/.grok-mission-control` is auto-migrated once)
 
 The PTY broker is a Node process because `@lydell/node-pty` is more reliable there than under Bun on macOS. The Bun process only serves the HTML and attachment upload endpoint. Both bind to **127.0.0.1** by default.
 
@@ -47,7 +47,7 @@ The install script records `WorkingDirectory` and `ProgramArguments` from the ch
 # or: bun run terminal:install  (also rebuilds the `mc` launcher)
 ```
 
-It installs `~/Library/LaunchAgents/com.mission-control.terminal.plist` (and removes the legacy `com.grok-mission-control.terminal` agent if present). Logs go to `$MC_DATA_DIR/logs/` (usually `~/.mission-control/logs` or the legacy data dir).
+It installs `~/Library/LaunchAgents/com.mission-control.terminal.plist` (and removes the legacy `com.grok-mission-control.terminal` agent if present). Logs go to `$MC_DATA_DIR/logs/` (usually `~/.mission-control/logs`).
 
 Manual control:
 

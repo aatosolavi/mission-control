@@ -101,7 +101,7 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 | Variable | Default |
 |---|---|
 | `MC_WORKSPACE_ROOT` | `~/dev` if it exists, else `$HOME` |
-| `MC_DATA_DIR` | `~/.mission-control` (or legacy `~/.grok-mission-control`) |
+| `MC_DATA_DIR` | `~/.mission-control` (legacy `~/.grok-mission-control` is auto-migrated) |
 | `MC_BIND_HOST` | `127.0.0.1` |
 | `MC_SPLASH` | splash on cold start (`0` to disable) |
 | `GROK_TERMINAL_*_COMMAND` | override agent CLI paths |

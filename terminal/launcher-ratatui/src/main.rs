@@ -228,6 +228,9 @@ struct SettingsFile {
     /// auto follows terminal (COLORFGBG / MC_UI_THEME) then OS appearance.
     #[serde(default = "default_theme")]
     ui_theme: String,
+    /// Absolute path for workspace scan root (Finder picker). Wins over MC_WORKSPACE_ROOT.
+    #[serde(default)]
+    workspace_root: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -257,6 +260,7 @@ impl Default for SettingsFile {
             default_agent: None,
             default_ide: None,
             ui_theme: default_theme(),
+            workspace_root: None,
         }
     }
 }
@@ -602,6 +606,160 @@ struct UiHitboxes {
 enum Screen {
     Picker,
     Settings,
+    /// Finder-style directory browser for workspace root.
+    FolderPicker,
+}
+
+#[derive(Clone)]
+struct FolderEntry {
+    name: String,
+    path: PathBuf,
+    is_parent: bool,
+    is_git: bool,
+}
+
+#[derive(Clone)]
+struct FolderBrowser {
+    cwd: PathBuf,
+    entries: Vec<FolderEntry>,
+    selected: usize,
+    offset: usize,
+}
+
+impl FolderBrowser {
+    fn open(start: PathBuf) -> Self {
+        let cwd = if start.is_dir() {
+            start
+        } else {
+            home_dir()
+        };
+        let mut browser = Self {
+            cwd,
+            entries: Vec::new(),
+            selected: 0,
+            offset: 0,
+        };
+        browser.reload();
+        browser
+    }
+
+    fn reload(&mut self) {
+        self.entries = list_folder_entries(&self.cwd);
+        self.selected = self.selected.min(self.entries.len().saturating_sub(1));
+        self.offset = 0;
+        self.keep_selected_visible(12);
+    }
+
+    fn keep_selected_visible(&mut self, height: usize) {
+        let height = height.max(1);
+        if self.selected < self.offset {
+            self.offset = self.selected;
+        } else if self.selected >= self.offset + height {
+            self.offset = self.selected + 1 - height;
+        }
+    }
+
+    fn select_next(&mut self) {
+        if self.entries.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + 1).min(self.entries.len() - 1);
+    }
+
+    fn select_prev(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    fn enter_selected(&mut self) {
+        let Some(entry) = self.entries.get(self.selected).cloned() else {
+            return;
+        };
+        if entry.path.is_dir() {
+            self.cwd = entry.path;
+            self.selected = 0;
+            self.reload();
+        }
+    }
+
+    fn go_up(&mut self) {
+        if let Some(parent) = self.cwd.parent() {
+            let parent = parent.to_path_buf();
+            if parent != self.cwd {
+                let left = self.cwd.clone();
+                self.cwd = parent;
+                self.reload();
+                // Land on the folder we just left.
+                if let Some(idx) = self.entries.iter().position(|e| e.path == left) {
+                    self.selected = idx;
+                }
+            }
+        }
+    }
+
+    fn jump(&mut self, path: PathBuf) {
+        if path.is_dir() {
+            self.cwd = path;
+            self.selected = 0;
+            self.reload();
+        }
+    }
+
+    /// Directory that would become the workspace root.
+    /// Prefer selected child; `..` means parent; empty list → cwd.
+    fn chosen_path(&self) -> PathBuf {
+        match self.entries.get(self.selected) {
+            Some(e) if e.is_parent => e.path.clone(),
+            Some(e) => e.path.clone(),
+            None => self.cwd.clone(),
+        }
+    }
+
+    fn current_path(&self) -> &Path {
+        &self.cwd
+    }
+}
+
+fn list_folder_entries(cwd: &Path) -> Vec<FolderEntry> {
+    let mut entries = Vec::new();
+
+    if let Some(parent) = cwd.parent() {
+        if parent != cwd {
+            entries.push(FolderEntry {
+                name: "..".into(),
+                path: parent.to_path_buf(),
+                is_parent: true,
+                is_git: false,
+            });
+        }
+    }
+
+    let mut dirs: Vec<FolderEntry> = fs::read_dir(cwd)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Skip dotfiles (Finder-ish default); keep ".." only via parent row.
+            if name.starts_with('.') {
+                return None;
+            }
+            let is_git = path.join(".git").exists();
+            Some(FolderEntry {
+                name,
+                path,
+                is_parent: false,
+                is_git,
+            })
+        })
+        .collect();
+
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    entries.extend(dirs);
+    entries
 }
 
 /// Background CLI install progress (shown under the main panel).
@@ -643,6 +801,8 @@ struct App {
     status_set_at: Option<Instant>,
     screen: Screen,
     settings_selected: usize,
+    /// Finder-style browser when choosing workspace root.
+    folder: FolderBrowser,
     /// Active or finishing CLI install.
     install: Option<InstallUi>,
     install_rx: Option<Receiver<InstallEvent>>,
@@ -655,6 +815,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let state = LauncherState::load();
+        let root = workspace_root(&state.settings);
         let repos = discover_repos(&state);
         let visible_repos = (0..repos.len()).collect();
         let default_action = state.default_action();
@@ -671,6 +832,7 @@ impl App {
             status_set_at: None,
             screen: Screen::Picker,
             settings_selected: 0,
+            folder: FolderBrowser::open(root),
             install: None,
             install_rx: None,
             hover_missing: None,
@@ -678,6 +840,27 @@ impl App {
         };
         app.apply_agent_memory();
         app
+    }
+
+    fn open_folder_picker(&mut self) {
+        let start = workspace_root(&self.state.settings);
+        self.folder = FolderBrowser::open(start);
+        self.screen = Screen::FolderPicker;
+        self.clear_status();
+    }
+
+    fn confirm_folder_selection(&mut self, path: PathBuf) {
+        if !path.is_dir() {
+            self.set_status("not a directory");
+            return;
+        }
+        self.state.settings.workspace_root = Some(path.display().to_string());
+        self.state.save();
+        self.repos = discover_repos(&self.state);
+        self.apply_filter();
+        self.screen = Screen::Settings;
+        self.settings_selected = 4; // workspace root row
+        self.set_status(format!("workspace root: {}", display_path(&path)));
     }
 
     fn install_busy(&self) -> bool {
@@ -917,7 +1100,7 @@ impl App {
     }
 
     fn settings_item_count() -> usize {
-        // splash, default agent, default IDE, ui theme, data dir (ro), workspace root (ro)
+        // splash, default agent, default IDE, ui theme, workspace root, state dir (ro)
         6
     }
 
@@ -1048,6 +1231,10 @@ impl App {
                 self.state.settings.ui_theme = next.to_string();
                 self.state.save();
                 self.set_status(format!("ui theme: {}", format_theme_label(next)));
+            }
+            4 => {
+                // Workspace root — open Finder-style browser (ignore delta direction).
+                self.open_folder_picker();
             }
             _ => {}
         }
@@ -1396,6 +1583,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         terminal.draw(|frame| match app.screen {
             Screen::Picker => draw(frame, &mut app),
             Screen::Settings => draw_settings(frame, &mut app),
+            Screen::FolderPicker => draw_folder_picker(frame, &mut app),
         })?;
 
         // Poll shorter while a status flash or install bar is active.
@@ -1410,6 +1598,48 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if app.screen == Screen::FolderPicker {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.screen = Screen::Settings;
+                            app.clear_status();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => app.folder.select_next(),
+                        KeyCode::Up | KeyCode::Char('k') => app.folder.select_prev(),
+                        KeyCode::Left | KeyCode::Backspace => app.folder.go_up(),
+                        KeyCode::Right | KeyCode::Enter => app.folder.enter_selected(),
+                        // Use highlighted folder (or parent when on ..)
+                        KeyCode::Char(' ') | KeyCode::Char('o') | KeyCode::Char('O') => {
+                            let path = app.folder.chosen_path();
+                            app.confirm_folder_selection(path);
+                        }
+                        // Use the directory we're currently viewing (path bar)
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            let path = app.folder.current_path().to_path_buf();
+                            app.confirm_folder_selection(path);
+                        }
+                        KeyCode::Char('h') | KeyCode::Char('H') => {
+                            app.folder.jump(home_dir());
+                        }
+                        KeyCode::Char('d') | KeyCode::Char('D') => {
+                            let dev = home_dir().join("dev");
+                            if dev.is_dir() {
+                                app.folder.jump(dev);
+                            } else {
+                                app.set_status("~/dev not found");
+                            }
+                        }
+                        KeyCode::Char('/') => {
+                            app.folder.jump(PathBuf::from("/"));
+                        }
+                        KeyCode::Char('~') => {
+                            app.folder.jump(home_dir());
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 if app.screen == Screen::Settings {
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -1500,6 +1730,26 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 _ => {}
             }
             }
+            Event::Mouse(mouse) if app.screen == Screen::FolderPicker => match mouse.kind {
+                MouseEventKind::ScrollDown => app.folder.select_next(),
+                MouseEventKind::ScrollUp => app.folder.select_prev(),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let list_bottom = app.hitboxes.list_top + app.hitboxes.list_height;
+                    if mouse.row >= app.hitboxes.list_top && mouse.row < list_bottom {
+                        let row = (mouse.row - app.hitboxes.list_top) as usize;
+                        let idx = app.folder.offset + row;
+                        if idx < app.folder.entries.len() {
+                            if idx == app.folder.selected {
+                                // Second click on same row → enter
+                                app.folder.enter_selected();
+                            } else {
+                                app.folder.selected = idx;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
             Event::Mouse(mouse) if app.screen == Screen::Picker => match mouse.kind {
                 MouseEventKind::ScrollDown => app.select_next_repo(),
                 MouseEventKind::ScrollUp => app.select_previous_repo(),
@@ -1546,7 +1796,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 }
                 _ => {}
             },
-            Event::Resize(_, _) => app.keep_selected_visible(),
+            Event::Resize(_, _) => {
+                app.keep_selected_visible();
+                if app.screen == Screen::FolderPicker {
+                    app.folder
+                        .keep_selected_visible(app.hitboxes.list_height.max(1) as usize);
+                }
+            }
             _ => {}
         }
     }
@@ -1764,7 +2020,7 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "←/→ cycle · enter/space next · esc/s back",
+            "←/→ cycle · enter open  · esc/s back",
             Style::default().fg(t.dim),
         ))),
         chunks[0],
@@ -1791,14 +2047,15 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
         .map(|s| if s == "Windsurf" { "Devin Desktop" } else { s })
         .unwrap_or("auto");
     let ui_theme = format_theme_label(&app.state.settings.ui_theme);
+    let root = workspace_root(&app.state.settings);
 
     let rows = [
         format!("Splash (cold start)     {splash}"),
         format!("Default agent           {default_agent}"),
         format!("Default IDE (e)         {default_ide}"),
         format!("UI theme                {ui_theme}"),
-        format!("Data dir                {}", display_path(&data_dir())),
-        format!("Workspace root          {}", display_path(&workspace_root())),
+        format!("Workspace root          {}  ↵", display_path(&root)),
+        format!("State dir               {}", display_path(&data_dir())),
     ];
 
     let mut lines = Vec::new();
@@ -1809,7 +2066,8 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
                 .fg(ACCENT_ON)
                 .bg(ACCENT)
                 .add_modifier(Modifier::BOLD)
-        } else if i >= 4 {
+        } else if i >= 5 {
+            // state dir is read-only
             Style::default().fg(t.dim)
         } else {
             Style::default().fg(t.soft)
@@ -1829,6 +2087,177 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
             ))),
             chunks[3],
         );
+    }
+}
+
+fn draw_folder_picker(frame: &mut Frame<'_>, app: &mut App) {
+    let t = app.theme();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(t.bg).fg(t.text)),
+        frame.area(),
+    );
+
+    // Slightly taller panel so browsing feels roomy.
+    let area = folder_picker_rect(frame.area());
+    app.panel_area = area;
+
+    let title_path = display_path(app.folder.current_path());
+    let block = Block::default()
+        .title(format!(" Choose workspace root "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.border))
+        .style(Style::default().bg(t.bg).fg(t.text));
+    frame.render_widget(block, area);
+
+    let inner = inset(area, 2, 1);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // path bar
+            Constraint::Length(1), // help
+            Constraint::Min(6),    // directory list
+            Constraint::Length(1), // footer actions
+            Constraint::Length(1), // status / shortcuts
+        ])
+        .split(inner);
+
+    // Path bar — like Finder's location strip.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                pad_or_trim(&title_path, chunks[0].width.saturating_sub(2) as usize),
+                Style::default()
+                    .fg(ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        chunks[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "enter open folder · space use selected · s use this folder · esc cancel",
+            Style::default().fg(t.dim),
+        ))),
+        chunks[1],
+    );
+
+    // Directory listing
+    let list_area = chunks[2];
+    app.hitboxes.list_top = list_area.y;
+    app.hitboxes.list_height = list_area.height;
+    let visible = list_area.height as usize;
+    app.folder.keep_selected_visible(visible.max(1));
+
+    let mut lines = Vec::new();
+    for (i, entry) in app
+        .folder
+        .entries
+        .iter()
+        .enumerate()
+        .skip(app.folder.offset)
+        .take(visible)
+    {
+        let selected = i == app.folder.selected;
+        let marker = if selected { ">" } else { " " };
+        let icon = if entry.is_parent {
+            "^"
+        } else if entry.is_git {
+            "*"
+        } else {
+            " "
+        };
+        let badge = if entry.is_git {
+            "  git"
+        } else if entry.is_parent {
+            "  parent"
+        } else {
+            "/"
+        };
+
+        let name_width = list_area
+            .width
+            .saturating_sub(4 + badge.chars().count() as u16)
+            .max(8) as usize;
+        let label = if entry.is_parent {
+            ".."
+        } else {
+            entry.name.as_str()
+        };
+        let name = pad_or_trim(label, name_width);
+
+        let row_style = if selected {
+            Style::default()
+                .fg(ACCENT_ON)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else if entry.is_parent {
+            Style::default().fg(t.dim)
+        } else if entry.is_git {
+            Style::default().fg(t.text)
+        } else {
+            Style::default().fg(t.soft)
+        };
+        let badge_style = if selected {
+            Style::default().fg(ACCENT_ON).bg(ACCENT)
+        } else {
+            Style::default().fg(t.dim)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} {icon} "), row_style),
+            Span::styled(name, row_style),
+            Span::styled(badge, badge_style),
+        ]));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (empty folder)",
+            Style::default().fg(t.dim),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), list_area);
+
+    // Primary actions row
+    let chosen = display_path(&app.folder.chosen_path());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" select → ", Style::default().fg(ACCENT_ON).bg(ACCENT)),
+            Span::styled(
+                format!(" {}", pad_or_trim(&chosen, list_area.width.saturating_sub(12) as usize)),
+                Style::default().fg(t.text),
+            ),
+        ])),
+        chunks[3],
+    );
+
+    let footer = if let Some(status) = &app.status {
+        Line::from(Span::styled(status.clone(), Style::default().fg(ACCENT)))
+    } else {
+        Line::from(vec![
+            Span::styled("h", Style::default().fg(t.key)),
+            Span::styled(" home  ", Style::default().fg(t.dim)),
+            Span::styled("d", Style::default().fg(t.key)),
+            Span::styled(" ~/dev  ", Style::default().fg(t.dim)),
+            Span::styled("/", Style::default().fg(t.key)),
+            Span::styled(" root  ", Style::default().fg(t.dim)),
+            Span::styled("←", Style::default().fg(t.key)),
+            Span::styled(" up", Style::default().fg(t.dim)),
+        ])
+    };
+    frame.render_widget(Paragraph::new(footer), chunks[4]);
+}
+
+fn folder_picker_rect(screen: Rect) -> Rect {
+    let width = screen.width.min(MAX_WIDTH).max(48);
+    let height = screen.height.saturating_sub(2).min(28).max(14);
+    Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
     }
 }
 
@@ -2008,7 +2437,7 @@ fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
 fn discover_repos(state: &LauncherState) -> Vec<Repo> {
     let home = home_dir();
     let data = data_dir();
-    let root = workspace_root();
+    let root = workspace_root(&state.settings);
     let mut repos = Vec::new();
     let mut seen = HashSet::new();
 
@@ -2367,30 +2796,74 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Prefer MC_DATA_DIR, then ~/.mission-control, then legacy ~/.grok-mission-control.
+/// Canonical data dir: `~/.mission-control`.
+/// One-shot migrates `~/.grok-mission-control` when present and modern is missing.
+/// `MC_DATA_DIR` overrides, except when it still points at the legacy path after migrate.
 fn data_dir() -> PathBuf {
-    if let Ok(value) = env::var("MC_DATA_DIR") {
-        return expand_path(&value);
-    }
     let home = home_dir();
     let modern = home.join(".mission-control");
     let legacy = home.join(".grok-mission-control");
+
+    // Rename legacy → modern once (state, logs, bin/mc, shell integration).
+    if !modern.exists() && legacy.is_dir() {
+        match fs::rename(&legacy, &modern) {
+            Ok(()) => {
+                // Best-effort notice for interactive runs (LaunchAgent swallows stdout).
+                eprintln!(
+                    "[mc] Migrated data dir: {} → {}",
+                    legacy.display(),
+                    modern.display()
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "[mc] Could not migrate {} → {}: {err}",
+                    legacy.display(),
+                    modern.display()
+                );
+            }
+        }
+    }
+
+    if let Ok(value) = env::var("MC_DATA_DIR") {
+        let path = expand_path(&value);
+        // Stale LaunchAgent env after rename — use modern.
+        if path == legacy && modern.is_dir() {
+            return modern;
+        }
+        return path;
+    }
+
     if modern.is_dir() {
         modern
     } else if legacy.is_dir() {
+        // Rename failed; keep working from legacy until the next successful migrate.
         legacy
     } else {
         modern
     }
 }
 
-/// Prefer MC_WORKSPACE_ROOT, then GROK_TERMINAL_START_CWD, then ~/dev if present, else $HOME.
-fn workspace_root() -> PathBuf {
+/// Resolve workspace scan root.
+/// Order: settings (Finder picker) → MC_WORKSPACE_ROOT → GROK_TERMINAL_START_CWD → ~/dev → $HOME.
+fn workspace_root(settings: &SettingsFile) -> PathBuf {
+    if let Some(ref raw) = settings.workspace_root {
+        let path = expand_path(raw);
+        if path.is_dir() {
+            return path;
+        }
+    }
     if let Ok(value) = env::var("MC_WORKSPACE_ROOT") {
-        return expand_path(&value);
+        let path = expand_path(&value);
+        if path.is_dir() {
+            return path;
+        }
     }
     if let Ok(value) = env::var("GROK_TERMINAL_START_CWD") {
-        return expand_path(&value);
+        let path = expand_path(&value);
+        if path.is_dir() {
+            return path;
+        }
     }
     let home = home_dir();
     let dev = home.join("dev");

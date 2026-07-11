@@ -26,9 +26,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from "fs";
-import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
+import { dataDir } from "./data-dir.mjs";
 
 const PORT = Number(process.env.MC_HTML_PORT || process.env.PORT || 4321);
 const HOST = process.env.MC_BIND_HOST || "127.0.0.1";
@@ -37,13 +37,7 @@ const MAX_ATTACHMENT_BYTES = Number(process.env.MC_MAX_ATTACHMENT_BYTES || 25 * 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 
 function resolveDataDir(): string {
-  if (process.env.MC_DATA_DIR) return process.env.MC_DATA_DIR;
-  const home = process.env.HOME || homedir();
-  const modern = join(home, ".mission-control");
-  const legacy = join(home, ".grok-mission-control");
-  if (existsSync(modern)) return modern;
-  if (existsSync(legacy)) return legacy;
-  return modern;
+  return dataDir();
 }
 
 // For fast iteration during testing we re-read the HTML on every request.

@@ -8,15 +8,20 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$NEW_LABEL.plist"
 LEGACY_PLIST="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
 
-# Prefer modern data dir; keep using legacy if that is where state already lives.
-if [[ -n "${MC_DATA_DIR:-}" ]]; then
+# Canonical data dir: ~/.mission-control (migrate legacy once).
+MODERN_DATA_DIR="$HOME/.mission-control"
+LEGACY_DATA_DIR="$HOME/.grok-mission-control"
+if [[ ! -d "$MODERN_DATA_DIR" && -d "$LEGACY_DATA_DIR" ]]; then
+  echo "Migrating data dir: $LEGACY_DATA_DIR → $MODERN_DATA_DIR"
+  mv "$LEGACY_DATA_DIR" "$MODERN_DATA_DIR"
+fi
+
+# MC_DATA_DIR wins only when it is not the legacy path (LaunchAgent may still
+# point there after migrate).
+if [[ -n "${MC_DATA_DIR:-}" && "${MC_DATA_DIR}" != "$LEGACY_DATA_DIR" && "${MC_DATA_DIR}" != "$LEGACY_DATA_DIR/" ]]; then
   DATA_DIR="$MC_DATA_DIR"
-elif [[ -d "$HOME/.mission-control" ]]; then
-  DATA_DIR="$HOME/.mission-control"
-elif [[ -d "$HOME/.grok-mission-control" ]]; then
-  DATA_DIR="$HOME/.grok-mission-control"
 else
-  DATA_DIR="$HOME/.mission-control"
+  DATA_DIR="$MODERN_DATA_DIR"
 fi
 
 LOG_DIR="$DATA_DIR/logs"

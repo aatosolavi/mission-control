@@ -23,7 +23,7 @@ bun run terminal:install      # rebuild mc + reinstall LaunchAgent
 ## Config
 
 - `MC_WORKSPACE_ROOT` — where `mc` scans for git repos
-- `MC_DATA_DIR` — state/logs/bin (default `~/.mission-control`, legacy `~/.grok-mission-control`)
+- `MC_DATA_DIR` — state/logs/bin (default `~/.mission-control`; legacy `~/.grok-mission-control` is auto-migrated)
 - `MC_BIND_HOST` — default `127.0.0.1`
 
 ## Conventions

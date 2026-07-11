@@ -57,7 +57,7 @@ bun run terminal:install
 echo ""
 echo "✓ T-0 is installed"
 echo "  Open:  http://127.0.0.1:4321"
-echo "  Logs:  ~/.mission-control/logs/ (or ~/.grok-mission-control/logs if you still use the legacy data dir)"
+echo "  Logs:  ~/.mission-control/logs/"
 echo "  Helium: load extension/ as an unpacked extension for Cmd+T → terminal"
 echo ""
 if command -v open >/dev/null 2>&1; then
