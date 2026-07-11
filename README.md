@@ -8,7 +8,7 @@ Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Cursor, 
 
 ![T-0](https://img.shields.io/badge/local--first-orange) ![MIT](https://img.shields.io/badge/license-MIT-blue) ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
 
-> **Repo / CLI:** `mission-control` / `mc` · **Product name:** T-0
+> **Repo:** [`t-0`](https://github.com/aatosolavi/t-0) · **CLI:** `mc` · **Product:** T-0
 
 <p align="center">
   <img src="docs/assets/launchpad.png" alt="T-0 workspace and agent picker" width="900" />
@@ -19,14 +19,14 @@ Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Cursor, 
 ### One-liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aatosolavi/mission-control/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aatosolavi/t-0/main/install.sh | bash
 ```
 
 ### From a clone
 
 ```bash
-git clone https://github.com/aatosolavi/mission-control.git
-cd mission-control
+git clone https://github.com/aatosolavi/t-0.git
+cd t-0
 bun install
 bun run terminal:install   # build `mc` + LaunchAgent
 open http://127.0.0.1:4321

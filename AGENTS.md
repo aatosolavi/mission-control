@@ -1,6 +1,6 @@
 # T-0 — agent notes
 
-Product UI name: **T-0**. Repo/package/data still `mission-control` / `mc`.
+Product UI name: **T-0**. GitHub repo: `t-0`. CLI/`mc` + state dir still `mission-control` paths (`~/.mission-control`).
 
 This repo is **browser terminal only** (not a Next.js app).
 

@@ -101,7 +101,7 @@ App chip **Cursor** launches the **Cursor Agent** CLI (`agent` / `cursor-agent`)
 ## Branding
 
 User-facing name: **T-0** (launch countdown — liftoff is now).  
-Repo / package / data dir / `mc` binary keep `mission-control` paths for continuity.
+GitHub repo is `t-0`. Package name, state dir (`~/.mission-control`), LaunchAgent, and `mc` binary keep `mission-control` paths for continuity.
 
 ### Git row metadata
 

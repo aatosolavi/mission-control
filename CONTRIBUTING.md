@@ -16,8 +16,8 @@ Requirements:
 - macOS is the primary target today
 
 ```bash
-git clone https://github.com/aatosolavi/mission-control.git
-cd mission-control
+git clone https://github.com/aatosolavi/t-0.git
+cd t-0
 bun install
 bun run terminal          # foreground
 # or

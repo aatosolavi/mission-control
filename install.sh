@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# T-0 (mission-control) — quick install (macOS-first)
+# T-0 — quick install (macOS-first)
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/aatosolavi/mission-control/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/aatosolavi/t-0/main/install.sh | bash
 # Or:
 #   ./install.sh
 set -euo pipefail
 
-REPO_URL="${MC_REPO_URL:-https://github.com/aatosolavi/mission-control.git}"
+REPO_URL="${MC_REPO_URL:-https://github.com/aatosolavi/t-0.git}"
 BRANCH="${MC_BRANCH:-main}"
 
 if [[ -n "${MC_INSTALL_DIR:-}" ]]; then
   INSTALL_DIR="$MC_INSTALL_DIR"
 elif [[ -d "${HOME}/dev" ]]; then
-  INSTALL_DIR="${HOME}/dev/mission-control"
+  INSTALL_DIR="${HOME}/dev/t-0"
 else
-  INSTALL_DIR="${HOME}/mission-control"
+  INSTALL_DIR="${HOME}/t-0"
 fi
 
 echo "→ T-0 install"

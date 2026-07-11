@@ -1,8 +1,12 @@
 {
-  "name": "mission-control",
+  "name": "t-0",
   "version": "0.1.0",
   "private": true,
   "description": "T-0 — browser terminal + agent launcher (real local PTY in a tab)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aatosolavi/t-0.git"
+  },
   "scripts": {
     "terminal": "node terminal/start.mjs",
     "terminal:pty": "node terminal/pty-server.mjs",
