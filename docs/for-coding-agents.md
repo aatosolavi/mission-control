@@ -10,8 +10,8 @@ Also available as a skill: [`.agents/skills/install-t0/SKILL.md`](../.agents/ski
 |-------|-------------|
 | Browser terminal (xterm + PTY) | http://127.0.0.1:4321 |
 | PTY broker (Node) | ws://127.0.0.1:4322 |
-| Launcher CLI | `t0` → `~/.mission-control/bin/t0` |
-| State | `~/.mission-control/` |
+| Launcher CLI | `t0` → `~/.t-0/bin/t0` |
+| State | `~/.t-0/` |
 | Source | https://github.com/aatosolavi/t-0 |
 
 **Local shell only.** Default bind is localhost. Security notes: [SECURITY.md](../SECURITY.md).

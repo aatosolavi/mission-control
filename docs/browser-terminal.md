@@ -10,7 +10,7 @@ Agent install playbook: [for-coding-agents.md](./for-coding-agents.md) · skill:
 - Accent: orange (`#f97316` / `#fb923c`)
 - Themes: **system / light / dark** — `?theme=system|light|dark`, or **⌘/Ctrl+Shift+L** to cycle (stored in `localStorage`)
 - Workspace root: `MC_WORKSPACE_ROOT` (default `~/dev` if present, else `$HOME`)
-- State dir: `MC_DATA_DIR` → `~/.mission-control` (legacy `~/.grok-mission-control` is auto-migrated once)
+- State dir: `MC_DATA_DIR` → `~/.t-0` (legacy `~/.mission-control` / `~/.grok-mission-control` auto-migrated once)
 
 The PTY broker is a Node process because `@lydell/node-pty` is more reliable there than under Bun on macOS. The Bun process only serves the HTML and attachment upload endpoint. Both bind to **127.0.0.1** by default.
 
@@ -49,7 +49,7 @@ The install script records `WorkingDirectory` and `ProgramArguments` from the ch
 # or: bun run terminal:install  (also rebuilds the `t0` launcher)
 ```
 
-It installs `~/Library/LaunchAgents/com.mission-control.terminal.plist` (and removes the legacy `com.grok-mission-control.terminal` agent if present). Logs go to `$MC_DATA_DIR/logs/` (usually `~/.mission-control/logs`).
+It installs `~/Library/LaunchAgents/com.mission-control.terminal.plist` (and removes the legacy `com.grok-mission-control.terminal` agent if present). Logs go to `$MC_DATA_DIR/logs/` (usually `~/.t-0/logs`).
 
 Manual control:
 
@@ -64,7 +64,7 @@ The browser page stays a terminal surface. Workspace/app selection lives in a na
 
 - Ratatui launcher crate: `terminal/launcher-ratatui`
 - Install command: `bun run terminal:launcher:install`
-- Installed command: `$MC_DATA_DIR/bin/t0` (default `~/.mission-control/bin/t0`; legacy `mc` alias)
+- Installed command: `$MC_DATA_DIR/bin/t0` (default `~/.t-0/bin/t0`; legacy `mc` alias)
 - Dev fallback path: `terminal/launcher-ratatui/target/release/t0`
 - The PTY broker automatically starts the installed binary when it exists.
 - If the binary is missing, the broker falls back to the normal login shell.
@@ -103,7 +103,7 @@ App chip **Cursor** launches the **Cursor Agent** CLI (`agent` / `cursor-agent`)
 ## Branding
 
 User-facing name: **T-0** (launch countdown — liftoff is now).  
-GitHub repo: `t-0`. CLI: **`t0`** (legacy alias `mc`). State dir / LaunchAgent still use `mission-control` paths (`~/.mission-control`, `com.mission-control.terminal`) for continuity.
+GitHub repo: `t-0`. CLI: **`t0`** (legacy alias `mc`). State dir: `~/.t-0`. LaunchAgent label remains `com.mission-control.terminal` for continuity.
 
 ### Git row metadata
 

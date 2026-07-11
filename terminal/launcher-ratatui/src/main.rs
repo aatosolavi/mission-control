@@ -2877,31 +2877,38 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Canonical data dir: `~/.mission-control`.
-/// One-shot migrates `~/.grok-mission-control` when present and modern is missing.
-/// `MC_DATA_DIR` overrides, except when it still points at the legacy path after migrate.
+/// Canonical data dir: `~/.t-0`.
+/// One-shot migrates `~/.mission-control` or `~/.grok-mission-control` when modern is missing.
+/// `MC_DATA_DIR` overrides, except when it still points at a legacy path after migrate.
 fn data_dir() -> PathBuf {
     let home = home_dir();
-    let modern = home.join(".mission-control");
-    let legacy = home.join(".grok-mission-control");
+    let modern = home.join(".t-0");
+    let legacies = [
+        home.join(".mission-control"),
+        home.join(".grok-mission-control"),
+    ];
 
-    // Rename legacy → modern once (state, logs, bin/mc, shell integration).
-    if !modern.exists() && legacy.is_dir() {
-        match fs::rename(&legacy, &modern) {
-            Ok(()) => {
-                // Best-effort notice for interactive runs (LaunchAgent swallows stdout).
-                eprintln!(
-                    "[mc] Migrated data dir: {} → {}",
-                    legacy.display(),
-                    modern.display()
-                );
+    if !modern.exists() {
+        for legacy in &legacies {
+            if !legacy.is_dir() {
+                continue;
             }
-            Err(err) => {
-                eprintln!(
-                    "[mc] Could not migrate {} → {}: {err}",
-                    legacy.display(),
-                    modern.display()
-                );
+            match fs::rename(legacy, &modern) {
+                Ok(()) => {
+                    eprintln!(
+                        "[t0] Migrated data dir: {} → {}",
+                        legacy.display(),
+                        modern.display()
+                    );
+                    break;
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[t0] Could not migrate {} → {}: {err}",
+                        legacy.display(),
+                        modern.display()
+                    );
+                }
             }
         }
     }
@@ -2909,20 +2916,21 @@ fn data_dir() -> PathBuf {
     if let Ok(value) = env::var("MC_DATA_DIR") {
         let path = expand_path(&value);
         // Stale LaunchAgent env after rename — use modern.
-        if path == legacy && modern.is_dir() {
+        if legacies.iter().any(|l| path == *l) && modern.is_dir() {
             return modern;
         }
         return path;
     }
 
     if modern.is_dir() {
-        modern
-    } else if legacy.is_dir() {
-        // Rename failed; keep working from legacy until the next successful migrate.
-        legacy
-    } else {
-        modern
+        return modern;
     }
+    for legacy in &legacies {
+        if legacy.is_dir() {
+            return legacy.clone();
+        }
+    }
+    modern
 }
 
 /// Resolve workspace scan root.

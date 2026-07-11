@@ -132,7 +132,11 @@ writeFileSync(
 t0() {
   local _t0_bin="\${MC_LAUNCHER:-}"
   if [[ -z "\$_t0_bin" ]]; then
-    if [[ -x "\$HOME/.mission-control/bin/t0" ]]; then
+    if [[ -x "\$HOME/.t-0/bin/t0" ]]; then
+      _t0_bin="\$HOME/.t-0/bin/t0"
+    elif [[ -x "\$HOME/.t-0/bin/mc" ]]; then
+      _t0_bin="\$HOME/.t-0/bin/mc"
+    elif [[ -x "\$HOME/.mission-control/bin/t0" ]]; then
       _t0_bin="\$HOME/.mission-control/bin/t0"
     elif [[ -x "\$HOME/.mission-control/bin/mc" ]]; then
       _t0_bin="\$HOME/.mission-control/bin/mc"
@@ -223,7 +227,9 @@ mc() { t0 "\$@"; }
 // Prefer modern t0.zsh block; keep legacy mc.zsh marker compatible.
 const sourceBlock = `
 # >>> t-0 launcher integration >>>
-if [ -s "$HOME/.mission-control/shell/t0.zsh" ]; then
+if [ -s "$HOME/.t-0/shell/t0.zsh" ]; then
+  source "$HOME/.t-0/shell/t0.zsh"
+elif [ -s "$HOME/.mission-control/shell/t0.zsh" ]; then
   source "$HOME/.mission-control/shell/t0.zsh"
 elif [ -s "$HOME/.mission-control/shell/mc.zsh" ]; then
   source "$HOME/.mission-control/shell/mc.zsh"

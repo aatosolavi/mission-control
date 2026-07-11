@@ -54,6 +54,8 @@ const LAUNCHER_CANDIDATES = [
   process.env.GROK_TERMINAL_LAUNCHER,
   join(DATA_DIR, "bin/t0"),
   join(DATA_DIR, "bin/mc"),
+  join(HOME, ".t-0", "bin/t0"),
+  join(HOME, ".t-0", "bin/mc"),
   join(HOME, ".mission-control", "bin/t0"),
   join(HOME, ".mission-control", "bin/mc"),
   join(HOME, ".grok-mission-control", "bin/mc"),

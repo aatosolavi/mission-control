@@ -13,7 +13,7 @@ bun run terminal:launcher:build
 That builds the release binary and installs it under the data dir:
 
 ```text
-~/.mission-control/bin/t0
+~/.t-0/bin/t0
 ```
 
 (Legacy PATH alias: `mc` → same binary.)

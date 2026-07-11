@@ -8,17 +8,25 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$NEW_LABEL.plist"
 LEGACY_PLIST="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
 
-# Canonical data dir: ~/.mission-control (migrate legacy once).
-MODERN_DATA_DIR="$HOME/.mission-control"
-LEGACY_DATA_DIR="$HOME/.grok-mission-control"
-if [[ ! -d "$MODERN_DATA_DIR" && -d "$LEGACY_DATA_DIR" ]]; then
-  echo "Migrating data dir: $LEGACY_DATA_DIR → $MODERN_DATA_DIR"
-  mv "$LEGACY_DATA_DIR" "$MODERN_DATA_DIR"
+# Canonical data dir: ~/.t-0 (migrate older dirs once).
+MODERN_DATA_DIR="$HOME/.t-0"
+LEGACY_MC="$HOME/.mission-control"
+LEGACY_GROK="$HOME/.grok-mission-control"
+if [[ ! -d "$MODERN_DATA_DIR" ]]; then
+  if [[ -d "$LEGACY_MC" ]]; then
+    echo "Migrating data dir: $LEGACY_MC → $MODERN_DATA_DIR"
+    mv "$LEGACY_MC" "$MODERN_DATA_DIR"
+  elif [[ -d "$LEGACY_GROK" ]]; then
+    echo "Migrating data dir: $LEGACY_GROK → $MODERN_DATA_DIR"
+    mv "$LEGACY_GROK" "$MODERN_DATA_DIR"
+  fi
 fi
 
-# MC_DATA_DIR wins only when it is not the legacy path (LaunchAgent may still
+# MC_DATA_DIR wins only when it is not a legacy path (LaunchAgent may still
 # point there after migrate).
-if [[ -n "${MC_DATA_DIR:-}" && "${MC_DATA_DIR}" != "$LEGACY_DATA_DIR" && "${MC_DATA_DIR}" != "$LEGACY_DATA_DIR/" ]]; then
+if [[ -n "${MC_DATA_DIR:-}" \
+  && "${MC_DATA_DIR}" != "$LEGACY_MC" && "${MC_DATA_DIR}" != "$LEGACY_MC/" \
+  && "${MC_DATA_DIR}" != "$LEGACY_GROK" && "${MC_DATA_DIR}" != "$LEGACY_GROK/" ]]; then
   DATA_DIR="$MC_DATA_DIR"
 else
   DATA_DIR="$MODERN_DATA_DIR"

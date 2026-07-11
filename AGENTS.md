@@ -1,6 +1,6 @@
 # T-0 — agent notes
 
-Product UI name: **T-0**. GitHub repo: `t-0`. CLI: **`t0`** (legacy alias `mc`). State dir: `~/.mission-control`.
+Product UI name: **T-0**. GitHub repo: `t-0`. CLI: **`t0`** (legacy alias `mc`). State dir: `~/.t-0`.
 
 This repo is **browser terminal only** (not a Next.js app).
 
@@ -25,7 +25,7 @@ bun run terminal:install      # rebuild t0 + reinstall LaunchAgent
 ## Config
 
 - `MC_WORKSPACE_ROOT` — where `t0` scans for git repos
-- `MC_DATA_DIR` — state/logs/bin (default `~/.mission-control`; legacy `~/.grok-mission-control` is auto-migrated)
+- `MC_DATA_DIR` — state/logs/bin (default `~/.t-0`; legacy `~/.mission-control` / `~/.grok-mission-control` auto-migrated)
 - `MC_BIND_HOST` — default `127.0.0.1`
 - `MC_DEMO=1` / `MC_MOCK=1` — fake public-looking workspaces for marketing screenshots (`MC_DEMO=1 t0`); skips splash
 

@@ -11,7 +11,7 @@ Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Cursor, 
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#install-macos)
 [![CLI](https://img.shields.io/badge/CLI-t0-f97316)](#t-0-keys-t0)
 
-**Repo:** [aatosolavi/t-0](https://github.com/aatosolavi/t-0) · **CLI:** `t0` (legacy alias `mc`) · **State:** `~/.mission-control`
+**Repo:** [aatosolavi/t-0](https://github.com/aatosolavi/t-0) · **CLI:** `t0` (legacy alias `mc`) · **State:** `~/.t-0`
 
 <p align="center">
   <img
@@ -120,7 +120,7 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 | Variable | Default |
 |---|---|
 | `MC_WORKSPACE_ROOT` | `~/dev` if it exists, else `$HOME` (or path set in Settings) |
-| `MC_DATA_DIR` | `~/.mission-control` (legacy `~/.grok-mission-control` is auto-migrated) |
+| `MC_DATA_DIR` | `~/.t-0` (legacy `~/.mission-control` / `~/.grok-mission-control` auto-migrated) |
 | `MC_BIND_HOST` | `127.0.0.1` |
 | `MC_SPLASH` | splash on cold start (`0` to disable) |
 | `MC_DEMO` / `MC_MOCK` | `1` = fake workspaces for marketing screenshots |

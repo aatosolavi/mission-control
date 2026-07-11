@@ -15,7 +15,7 @@ T-0 is a **local-first** browser terminal (real PTY) plus a Ratatui launcher (`t
 - **Repo:** https://github.com/aatosolavi/t-0  
 - **Product UI:** http://127.0.0.1:4321  
 - **CLI:** `t0` (legacy alias `mc`)  
-- **State dir:** `~/.mission-control`  
+- **State dir:** `~/.t-0`  
 
 This product is a **full shell as the user**. Bind stays on **localhost**. Never expose 4321/4322.
 
@@ -74,7 +74,7 @@ t0                          # launcher TUI (or mc legacy alias)
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4321   # expect 200 when service is up
 ```
 
-Logs: `~/.mission-control/logs/`
+Logs: `~/.t-0/logs/`
 
 LaunchAgent:
 
@@ -87,7 +87,7 @@ launchctl kickstart -k "gui/$(id -u)/com.mission-control.terminal"
 | Env | Meaning |
 |-----|---------|
 | `MC_WORKSPACE_ROOT` | Where `t0` scans for git repos (or set in Settings → workspace root) |
-| `MC_DATA_DIR` | State/logs/bin (default `~/.mission-control`) |
+| `MC_DATA_DIR` | State/logs/bin (default `~/.t-0`) |
 | `MC_BIND_HOST` | Default `127.0.0.1` only |
 | `MC_SPLASH=0` | Skip cold-start splash |
 | `MC_DEMO=1` | Fake workspaces for screenshots (not for daily use) |
