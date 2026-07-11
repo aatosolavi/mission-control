@@ -4,10 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>T-0</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;700&display=swap">
-  <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@5.5.0/css/xterm.css">
+  <link rel="stylesheet" href="/vendor.css">
   <style>
     * { box-sizing: border-box; }
     :root {
@@ -137,10 +134,8 @@
   <div id="theme-chip" aria-live="polite"></div>
 
   <script type="module">
-    // xterm + fit via esm.sh (zero build, reliable CDN for MVP)
-    import { Terminal } from 'https://esm.sh/@xterm/xterm@5.5.0';
-    import { FitAddon } from 'https://esm.sh/@xterm/addon-fit@0.11';
-    import { WebLinksAddon } from 'https://esm.sh/@xterm/addon-web-links@0.11';
+    // Bundled locally: terminal pages must not trust remote JavaScript with shell access.
+    import { Terminal, FitAddon, WebLinksAddon, CanvasAddon, WebglAddon } from '/vendor.js';
 
     const THEME_STORAGE_KEY = 'mc-terminal-theme';
 
@@ -239,7 +234,7 @@
       themeChipTimer = window.setTimeout(() => chip.classList.remove('visible'), 1400);
     }
 
-    /** @type {import('https://esm.sh/@xterm/xterm@5.5.0').Terminal | null} */
+    /** @type {import('@xterm/xterm').Terminal | null} */
     let term = null;
 
     function applyTheme(theme, mode = resolveThemeMode()) {
@@ -330,14 +325,12 @@
     try {
       const renderer = params.get('renderer');
       if (renderer === 'canvas') {
-        const { CanvasAddon } = await import('https://esm.sh/@xterm/addon-canvas@0.7.0');
         canvasAddon = new CanvasAddon();
         term.loadAddon(canvasAddon);
         console.log('%c[T-0] renderer: canvas (forced)', 'color:#555');
       } else if (renderer === 'dom') {
         console.log('%c[T-0] renderer: DOM (forced)', 'color:#555');
       } else {
-        const { WebglAddon } = await import('https://esm.sh/@xterm/addon-webgl@0.18.0');
         const webglAddon = new WebglAddon();
         webglAddon.onContextLoss(() => webglAddon.dispose());
         term.loadAddon(webglAddon);

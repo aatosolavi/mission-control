@@ -15,7 +15,7 @@ T-0 is a **local full shell** in the browser.
 | Remote bind | Refused unless `MC_ALLOW_REMOTE_BIND=1` |
 | PTY WebSocket | **Origin allowlist** — only local UI origins (`http://127.0.0.1:4321`, `http://localhost:4321`, plus `MC_ALLOWED_ORIGINS`) |
 | No-Origin clients | Denied unless `MC_ALLOW_NO_ORIGIN=1` |
-| Attachments | Sanitized basenames, reject `.`/`..`, max count/size |
+| Attachments | Same-origin POSTs only; sanitized basenames; max count, file size, and request size |
 | Agent install | Default **npm packages only**; `curl \| bash` recipes need `MC_ALLOW_SCRIPT_INSTALL=1` |
 
 ## Cross-site WebSocket (CSWSH)
@@ -24,14 +24,16 @@ Browsers can open websockets to localhost from *other* websites. Without Origin 
 
 Mitigation in T-0: reject connections whose `Origin` is not on the allowlist.
 
-## CDN note
+## Browser dependencies
 
-The terminal page currently loads **xterm.js from esm.sh** (and optional Google Fonts). A compromised CDN is a supply-chain risk for a full shell. Vendoring xterm for offline/same-origin is a recommended follow-up.
+The terminal page bundles **xterm.js and its addons locally**. It does not load executable code or fonts from third-party origins. Because browser code can control a full shell, keep executable dependencies same-origin and covered by the page's Content Security Policy.
 
 ## Quick self-check
 
 - [x] Default bind is localhost
 - [x] PTY Origin allowlist
+- [x] Browser dependencies bundled and served locally
+- [x] Attachment Origin checks + aggregate request limit
 - [x] No API keys / private home paths in tracked source
 - [x] Attachment name sanitize + size limits
 - [x] Install hover does not silently run unpinned curl scripts by default

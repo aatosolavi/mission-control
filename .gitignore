@@ -3,6 +3,7 @@
 
 # production / build
 /build
+/terminal/dist
 target/
 
 # misc

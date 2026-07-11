@@ -7,7 +7,8 @@
  *   bun run terminal  →  http://127.0.0.1:4321
  */
 
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { randomBytes } from "crypto";
+import { mkdirSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { dataDir } from "./data-dir.mjs";
@@ -16,7 +17,23 @@ const PORT = Number(process.env.MC_HTML_PORT || process.env.PORT || 4321);
 const HOST = process.env.MC_BIND_HOST || "127.0.0.1";
 const MAX_ATTACHMENTS = Number(process.env.MC_MAX_ATTACHMENTS || 20);
 const MAX_ATTACHMENT_BYTES = Number(process.env.MC_MAX_ATTACHMENT_BYTES || 25 * 1024 * 1024);
+const MAX_ATTACHMENT_TOTAL_BYTES = Number(
+  process.env.MC_MAX_ATTACHMENT_TOTAL_BYTES || 100 * 1024 * 1024,
+);
 const currentDir = dirname(fileURLToPath(import.meta.url));
+const distDir = resolve(currentDir, "dist");
+const ALLOWED_ORIGINS = new Set(
+  (process.env.MC_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .concat([
+      `http://127.0.0.1:${PORT}`,
+      `http://localhost:${PORT}`,
+      "http://127.0.0.1:4321",
+      "http://localhost:4321",
+    ]),
+);
 
 function resolveDataDir(): string {
   return dataDir();
@@ -24,12 +41,39 @@ function resolveDataDir(): string {
 
 // For fast iteration during testing we re-read the HTML on every request.
 // (Cheap on localhost. We can cache later.)
-function getHtml(): string {
+function getHtml(nonce: string): string {
   try {
-    return readFileSync(resolve(currentDir, "index.html"), "utf8");
+    return readFileSync(resolve(currentDir, "index.html"), "utf8")
+      .replace("<style>", `<style nonce="${nonce}">`)
+      .replace("<script type=\"module\">", `<script type="module" nonce="${nonce}">`);
   } catch {
     return "<h1>T-0</h1><p>index.html not found next to server.ts</p>";
   }
+}
+
+function securityHeaders(nonce: string): Record<string, string> {
+  return {
+    "Content-Security-Policy": [
+      "default-src 'self'",
+      `script-src 'self' 'nonce-${nonce}'`,
+      // xterm positions terminal cells with inline styles; keep scripts nonce-locked.
+      "style-src 'self' 'unsafe-inline'",
+      "connect-src 'self' ws://127.0.0.1:4322 ws://localhost:4322",
+      "img-src 'self' data:",
+      "font-src 'self'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+    ].join("; "),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+  };
+}
+
+function originAllowed(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  return Boolean(origin && ALLOWED_ORIGINS.has(origin));
 }
 
 function sanitizeFileName(name: string): string {
@@ -65,11 +109,39 @@ if (HOST !== "127.0.0.1" && HOST !== "localhost" && HOST !== "::1") {
 const server = Bun.serve({
   hostname: HOST,
   port: PORT,
+  maxRequestBodySize: MAX_ATTACHMENT_TOTAL_BYTES,
 
   async fetch(req: Request) {
     const url = new URL(req.url);
 
+    if (req.method === "GET" && (url.pathname === "/vendor.js" || url.pathname === "/vendor.css")) {
+      const name = url.pathname.slice(1);
+      const contentType = name.endsWith(".js")
+        ? "text/javascript; charset=utf-8"
+        : "text/css; charset=utf-8";
+      try {
+        return new Response(Bun.file(join(distDir, name)), {
+          headers: {
+            "Content-Type": contentType,
+            "Cache-Control": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      } catch {
+        return new Response("Asset not built", { status: 404 });
+      }
+    }
+
     if (url.pathname === "/attachments" && req.method === "POST") {
+      if (!originAllowed(req)) {
+        return Response.json({ error: "Origin not allowed" }, { status: 403 });
+      }
+
+      const contentLength = Number(req.headers.get("content-length") || 0);
+      if (contentLength > MAX_ATTACHMENT_TOTAL_BYTES) {
+        return Response.json({ error: "Attachment request too large" }, { status: 413 });
+      }
+
       const form = await req.formData();
       const files = form
         .getAll("files")
@@ -83,6 +155,10 @@ const server = Bun.serve({
           { error: `Too many files (max ${MAX_ATTACHMENTS})` },
           { status: 400 },
         );
+      }
+      const totalBytes = files.reduce((total, file) => total + file.size, 0);
+      if (totalBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+        return Response.json({ error: "Attachments too large" }, { status: 413 });
       }
 
       const dir = attachmentDir();
@@ -109,10 +185,12 @@ const server = Bun.serve({
 
     // Everything else → the beautiful full-page terminal
     // Fresh read so you can edit index.html and just reload the tab during testing.
-    return new Response(getHtml(), {
+    const nonce = randomBytes(18).toString("base64");
+    return new Response(getHtml(nonce), {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-cache, no-store, must-revalidate",
+        ...securityHeaders(nonce),
       },
     });
   },

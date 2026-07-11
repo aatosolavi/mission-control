@@ -157,7 +157,7 @@ Details: [CONTRIBUTING.md](./CONTRIBUTING.md). Short version: **humans own PRs**
 
 ## Stack
 
-- **xterm.js** (CDN) · **@lydell/node-pty** · **ws**
+- **xterm.js** (locally bundled) · **@lydell/node-pty** · **ws**
 - **Bun** HTML server · **Node** PTY broker
 - **Rust / Ratatui** T-0 UI (`t0`)
 
