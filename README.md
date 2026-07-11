@@ -21,7 +21,7 @@ Open a tab. Get a full PTY. Pick a workspace. Launch Claude, Codex, Pi, Cursor, 
   />
 </p>
 
-<p align="center"><sub>Launcher UI (<code>MC_DEMO=1 t0</code> — mock workspaces for screenshots; your machine shows your own repos)</sub></p>
+<p align="center"><sub>T-0 launcher (<code>t0</code>)</sub></p>
 
 ## Install (macOS)
 
@@ -113,7 +113,7 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 - `?theme=light` · `?theme=dark` · `?theme=system`
 - **⌘/Ctrl+Shift+L** cycles
 
-**Launcher (`t0`)** — Settings → UI theme: `auto` / `dark` / `light` (truecolor looks best in Ghostty / the browser tab).
+**Launcher (`t0`)** — Settings → UI theme: `auto` / `dark` / `light`
 
 ### Config (env)
 

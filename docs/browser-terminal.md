@@ -44,7 +44,7 @@ The install script records `WorkingDirectory` and `ProgramArguments` from the ch
 
 ```bash
 ./terminal/install-launch-agent.sh
-# or: bun run terminal:install  (also rebuilds the `mc` launcher)
+# or: bun run terminal:install  (also rebuilds the `t0` launcher)
 ```
 
 It installs `~/Library/LaunchAgents/com.mission-control.terminal.plist` (and removes the legacy `com.grok-mission-control.terminal` agent if present). Logs go to `$MC_DATA_DIR/logs/` (usually `~/.mission-control/logs`).
@@ -62,8 +62,8 @@ The browser page stays a terminal surface. Workspace/app selection lives in a na
 
 - Ratatui launcher crate: `terminal/launcher-ratatui`
 - Install command: `bun run terminal:launcher:install`
-- Installed command: `$MC_DATA_DIR/bin/mc` (default `~/.mission-control/bin/mc`)
-- Dev fallback path: `terminal/launcher-ratatui/target/release/mc`
+- Installed command: `$MC_DATA_DIR/bin/t0` (default `~/.mission-control/bin/t0`; legacy `mc` alias)
+- Dev fallback path: `terminal/launcher-ratatui/target/release/t0`
 - The PTY broker automatically starts the installed binary when it exists.
 - If the binary is missing, the broker falls back to the normal login shell.
 - Set `GROK_TERMINAL_USE_LAUNCHER=0` to force shell-first behavior.
@@ -72,7 +72,7 @@ The TUI scans `MC_WORKSPACE_ROOT` (default `~/dev` or `$HOME`), shows repos cent
 
 ### Cold-start splash
 
-On **process start** of `mc` (new tab / new PTY), a short **T-0** splash uses the same bordered panel + orange accent as the picker. It does **not** reappear when an agent exits back to the launcher. Any key skips. Disable: `MC_SPLASH=0`.
+On **process start** of `t0` (new tab / new PTY), a short **T-0** splash uses the same bordered panel + orange accent as the picker. It does **not** reappear when an agent exits back to the launcher. Any key skips. Disable: `MC_SPLASH=0`.
 
 ### Memory
 
@@ -94,14 +94,14 @@ List order: **favorites → recents → last cwd → root scan**.
 | `f` | Reveal in Finder (`open`) |
 | `c` | Copy absolute path (`pbcopy`) |
 | `g` | Open `origin` remote in the browser (GitHub-style URLs) |
-| `s` | Settings — splash, default agent, default IDE for `e` |
+| `s` | Settings — splash, default agent, default IDE for `e`, UI theme, workspace root picker |
 
 App chip **Cursor** launches the **Cursor Agent** CLI (`agent` / `cursor-agent`). The shell command `cursor` on many installs is only a shim and does not open the IDE.
 
 ## Branding
 
 User-facing name: **T-0** (launch countdown — liftoff is now).  
-GitHub repo is `t-0`. Package name, state dir (`~/.mission-control`), LaunchAgent, and `mc` binary keep `mission-control` paths for continuity.
+GitHub repo: `t-0`. CLI: **`t0`** (legacy alias `mc`). State dir / LaunchAgent still use `mission-control` paths (`~/.mission-control`, `com.mission-control.terminal`) for continuity.
 
 ### Git row metadata
 
@@ -113,7 +113,7 @@ Recents still also write:
 $MC_DATA_DIR/recent-workspaces.txt
 ```
 
-Typing normal characters filters workspace names and paths live. `Backspace` edits the filter, and `Esc` clears the filter before closing the launcher. From a shell, run `mc` to open T-0 again.
+Typing normal characters filters workspace names and paths live. `Backspace` edits the filter, and `Esc` clears the filter before closing the launcher. From a shell, run `t0` to open T-0 again.
 
 `?cwd=/absolute/path` still bypasses the launcher and starts a shell directly in that path. That keeps direct deep links useful.
 

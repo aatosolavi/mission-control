@@ -13,20 +13,22 @@ bun run terminal:launcher:build
 That builds the release binary and installs it under the data dir:
 
 ```text
-~/.mission-control/bin/mc
+~/.mission-control/bin/t0
 ```
+
+(Legacy PATH alias: `mc` → same binary.)
 
 The PTY broker automatically uses the installed binary when it exists. It can also fall back to this build output during development:
 
 ```text
-terminal/launcher-ratatui/target/release/mc
+terminal/launcher-ratatui/target/release/t0
 ```
 
-Set `GROK_TERMINAL_USE_LAUNCHER=0` to force the old shell-first behavior.
+Set `GROK_TERMINAL_USE_LAUNCHER=0` or `MC_USE_LAUNCHER=0` to force the old shell-first behavior.
 
-Cold-start splash (“T-0 · go for launch”, once per `mc` process, skipped when returning from an agent). Disable with `MC_SPLASH=0`.
+Cold-start splash (“T-0 · go for launch”, once per `t0` process, skipped when returning from an agent). Disable with `MC_SPLASH=0`.
 
-Marketing screenshots: `MC_DEMO=1 mc` (or `MC_MOCK=1`) uses fake public-looking workspaces under `$TMPDIR/t-0-demo/` and skips the splash.
+Marketing screenshots: `MC_DEMO=1 t0` (or `MC_MOCK=1`) uses fake public-looking workspaces under `~/work/…` and skips the splash.
 
 ## Controls
 
@@ -51,7 +53,7 @@ Marketing screenshots: `MC_DEMO=1 mc` (or `MC_MOCK=1`) uses fake public-looking 
 - `f` (filter empty): open in Finder
 - `c` (filter empty): copy path
 - `g` (filter empty): open GitHub / origin remote
-- `s` (filter empty): settings (splash, default agent)
+- `s` (filter empty): settings (splash, default agent, UI theme, workspace root)
 - rows show git branch (`*` dirty, `↑N` ahead) and remembered agent
 - mouse wheel: move through workspaces
 - click an app name: choose app

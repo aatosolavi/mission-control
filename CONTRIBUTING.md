@@ -1,10 +1,10 @@
 # Contributing to T-0
 
-Thanks for helping. This project is intentionally small: a **browser terminal** + **`mc` workspace/agent pad**. Keep that focus.
+Thanks for helping. This project is intentionally small: a **browser terminal** + **`t0` workspace/agent pad**. Keep that focus.
 
 ## Product rule
 
-Keep the browser page a **terminal surface**. Workspace and agent selection belong in the Ratatui launcher (`mc`), not heavy DOM chrome. Do not reintroduce a Next.js dashboard without discussion.
+Keep the browser page a **terminal surface**. Workspace and agent selection belong in the Ratatui launcher (`t0`), not heavy DOM chrome. Do not reintroduce a Next.js dashboard without discussion.
 
 ## Dev setup
 
@@ -12,7 +12,7 @@ Requirements:
 
 - Node.js 20+ (PTY broker)
 - Bun (HTML server)
-- Rust stable via rustup (to rebuild `mc`)
+- Rust stable via rustup (to rebuild `t0`)
 - macOS is the primary target today
 
 ```bash
@@ -21,7 +21,7 @@ cd t-0
 bun install
 bun run terminal          # foreground
 # or
-bun run terminal:install  # build mc + LaunchAgent
+bun run terminal:install  # build t0 + LaunchAgent
 ```
 
 Open http://127.0.0.1:4321
@@ -39,7 +39,7 @@ bun run terminal:launcher:build
 | `terminal/index.html` | Browser UI (xterm.js) |
 | `terminal/server.ts` | Bun HTML + uploads (:4321) |
 | `terminal/pty-server.mjs` | Node PTY + WebSocket (:4322) |
-| `terminal/launcher-ratatui` | T-0 TUI (`mc`) |
+| `terminal/launcher-ratatui` | T-0 TUI (`t0`) |
 | `extension/` | Helium/Chrome new-tab redirect |
 
 ## Pull requests
@@ -69,7 +69,7 @@ Open source maintainers are drowning in low-quality agent PRs. T-0 is built *for
 **Rules of thumb (what good looks like)**
 
 1. **You own the PR.** You can explain every line if asked.
-2. **You ran it.** At least: build `mc` if touched; open `http://127.0.0.1:4321` if terminal paths changed.
+2. **You ran it.** At least: build `t0` if touched; open `http://127.0.0.1:4321` if terminal paths changed.
 3. **Self-review before request for review.** No “the agent said it works.”
 4. **Keep PRs reviewable.** Prefer under a few hundred lines unless coordinated.
 5. **No auto-opened PRs** from bots/agents without prior maintainer agreement.
@@ -86,7 +86,7 @@ This product is a **local shell**. Never change the default bind away from local
 
 Two areas where help is especially welcome:
 
-### 1. Finder-class folder UX in `mc`
+### 1. Finder-class folder UX in `t0`
 
 Settings already has a first-pass **workspace root** browser (navigate folders, pick a root). We want this to feel closer to a **small Finder replacement** for the launcher — not a full file manager, but something people actually enjoy using every day.
 
@@ -118,7 +118,7 @@ If you only have a logo mock, open an issue with a fenced code block so we can t
 
 - Docs / README polish
 - Extra agent chips (if CLI is real and tested)
-- UI polish in `mc` that doesn’t add chrome over the PTY
+- UI polish in `t0` that doesn’t add chrome over the PTY
 - Install / LaunchAgent edge cases on macOS
 - Linux notes (no full systemd product yet unless you ship it)
 - The Finder / splash items above (small, demoable PRs preferred)

@@ -1,28 +1,10 @@
 /**
- * Mission Control Terminal — Minimal Level-1 MVP
+ * T-0 — HTML server for the browser terminal (Bun).
  *
- * A real local shell (zsh/bash) running inside a browser tab via xterm.js + PTY over WebSocket.
+ * Serves index.html on :4321. The real PTY lives in terminal/pty-server.mjs
+ * under Node (node-pty is more reliable there than under Bun on macOS).
  *
- * Why this exists (per the Helium + mission-control vision):
- * - Open a tab in Helium (or any browser) that *is* your terminal.
- * - Cmd+T in Helium = instant new real shell.
- * - Zero friction, native mental model, perfect for agentic work later.
- *
- * Run:
- *   bun run terminal
- *
- * Then visit http://localhost:4321
- *
- * For Helium new-tab override:
- *   - Load the extension/ folder (or point chrome_url_overrides.newtab at a redirector)
- *   - Or simply use this URL as your new-tab page.
- *
- * IMPORTANT: The actual PTY handling lives in terminal/pty-server.mjs, which
- * runs under Node because @lydell/node-pty has unstable fd behavior under Bun
- * on macOS.
- *
- * This Bun file only serves the HTML page on :4321.
- * The browser then connects to the real PTY broker on :4322.
+ *   bun run terminal  →  http://127.0.0.1:4321
  */
 
 import { existsSync, mkdirSync, readFileSync } from "fs";

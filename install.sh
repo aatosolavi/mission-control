@@ -32,7 +32,7 @@ need node
 need bun
 
 if ! command -v rustup >/dev/null 2>&1; then
-  echo "error: rustup is required to build the mc launcher (https://rustup.rs)" >&2
+  echo "error: rustup is required to build the t0 launcher (https://rustup.rs)" >&2
   exit 1
 fi
 
