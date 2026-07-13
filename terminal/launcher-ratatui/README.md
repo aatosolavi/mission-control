@@ -30,6 +30,8 @@ Cold-start splash (“T-0 · go for launch”, once per `t0` process, skipped wh
 
 Marketing screenshots: `MC_DEMO=1 t0` (or `MC_MOCK=1`) uses fake public-looking workspaces under `~/work/…` and skips the splash.
 
+After a successful headless init, the launcher pauses with `init finished — press enter` so the agent summary stays readable. Skip with `MC_INIT_NO_PAUSE=1`. Dry-run recipes with `MC_INIT_DRY_RUN=1` (prints argv, no spawn).
+
 ## Controls
 
 - type characters: filter workspaces by name or path
@@ -54,7 +56,7 @@ Marketing screenshots: `MC_DEMO=1 t0` (or `MC_MOCK=1`) uses fake public-looking 
 - `c` (filter empty): copy path
 - `g` (filter empty): open GitHub / origin remote
 - `s` (filter empty): settings (splash, default agent, UI theme, workspace root)
-- `n` (filter empty): **new project** popup — name, parent, template, init agent, optional notes; scaffolds a git repo then runs **headless init** via the chosen agent (harness-neutral recipes for Grok, Codex, Claude, Pi, Amp, Devin, Droid, Cursor)
+- `n` (filter empty): **new project** popup — name, parent, template, init agent, multi-line notes; scaffolds a git repo then runs **headless init** via the chosen agent (harness-neutral recipes for Grok, Codex, Claude, Pi, Amp, Devin, Droid, Cursor). Notes: Enter inserts newline; create with Create field or **Ctrl+Enter**. Word/line delete: **Opt+Backspace**, **Ctrl+U** (line), **Ctrl+W** (word). Agents with elevated autonomy show **full tools** on Create/Init.
 - rows show git branch (`*` dirty, `↑N` ahead) and remembered agent
 - mouse wheel: move through workspaces
 - click an app name: choose app

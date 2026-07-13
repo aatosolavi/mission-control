@@ -1,3 +1,5 @@
+mod new_project;
+
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -13,11 +15,18 @@ use std::{
 use crossterm::{
     cursor::Show,
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-        MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+
+use new_project::{
+    auto_scroll_notes_to_end, build_init_command, clamp_notes_scroll, compose_init_prompt,
+    create_scaffold, delete_current_line, delete_last_char, delete_last_word, env_flag_on,
+    notes_viewport, pad_line, slugify_project_name, InitAgentKind, InitCommand, InitPrompt,
+    ProjectTemplate, NAME_MAX_CHARS, NOTES_MAX_CHARS, NOTES_VIEWPORT_ROWS,
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -599,13 +608,6 @@ struct Launch {
     init: Option<InitCommand>,
 }
 
-/// Per-agent unattended init invocation.
-struct InitCommand {
-    program: String,
-    args: Vec<String>,
-    cwd: PathBuf,
-}
-
 #[derive(Default)]
 struct UiHitboxes {
     action_row: u16,
@@ -628,28 +630,6 @@ enum Screen {
 enum FolderPickerPurpose {
     WorkspaceRoot,
     NewProjectParent,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ProjectTemplate {
-    Agent,
-    Minimal,
-}
-
-impl ProjectTemplate {
-    fn label(self) -> &'static str {
-        match self {
-            ProjectTemplate::Agent => "agent",
-            ProjectTemplate::Minimal => "minimal",
-        }
-    }
-
-    fn cycle(self) -> Self {
-        match self {
-            ProjectTemplate::Agent => ProjectTemplate::Minimal,
-            ProjectTemplate::Minimal => ProjectTemplate::Agent,
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -699,6 +679,8 @@ struct NewProjectForm {
     /// None = scaffold only (no agent available or user cycled to skip).
     init_agent: Option<Action>,
     notes: String,
+    /// First visible logical line of the notes 3-row viewport.
+    notes_scroll: u16,
     field: NewProjectField,
 }
 
@@ -710,6 +692,7 @@ impl NewProjectForm {
             template: ProjectTemplate::Agent,
             init_agent: default_agent,
             notes: String::new(),
+            notes_scroll: 0,
             field: NewProjectField::Name,
         }
     }
@@ -1058,7 +1041,10 @@ impl App {
             &slug,
             self.new_project.template,
             &self.new_project.notes,
+            &display_path,
         )?;
+        // Ensure nested / scaffold-only parents still appear via recents.
+        record_recent_workspace(&target);
         self.select_repo_by_path(&target);
         self.screen = Screen::Picker;
 
@@ -1080,22 +1066,28 @@ impl App {
             return Ok(None);
         }
 
+        let kind = action_to_init_kind(action)
+            .ok_or_else(|| "shell cannot run headless init".to_string())?;
+        let (program, prefix) = resolve_program(action)
+            .ok_or_else(|| format!("no command for {}", action.label()))?;
         let prompt = compose_init_prompt(&InitPrompt {
             project_name: slug.clone(),
             template,
             notes,
         });
-        let cmd = build_init_command(action, &target, &prompt)?;
+        let cmd = build_init_command(kind, program, prefix, &target, &prompt);
         self.set_status(format!(
             "created {} · running {} init…",
             display_path(&target),
             action.label()
         ));
-        Ok(Some(Launch {
+        let launch = Launch {
             action,
             cwd: target,
             init: Some(cmd),
-        }))
+        };
+        self.prepare_launch(&launch);
+        Ok(Some(launch))
     }
 
     fn install_busy(&self) -> bool {
@@ -1983,32 +1975,98 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 }
 
                 if app.screen == Screen::NewProject {
+                    let mods = key.modifiers;
+                    let ctrl = mods.contains(KeyModifiers::CONTROL);
+                    let alt = mods.contains(KeyModifiers::ALT);
+                    let super_key = mods.contains(KeyModifiers::SUPER);
+                    let typing_mods = mods.intersects(
+                        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                    );
+
+                    // Ctrl+Enter always creates from any field.
+                    if matches!(key.code, KeyCode::Enter) && ctrl {
+                        match app.try_create_project() {
+                            Ok(Some(launch)) => return Ok(Some(launch)),
+                            Ok(None) => {}
+                            Err(err) => app.set_status(err),
+                        }
+                        continue;
+                    }
+
+                    // Ctrl+U / Ctrl+W on Name/Notes (reliable kill-line / kill-word).
+                    if ctrl {
+                        if let KeyCode::Char(c) = key.code {
+                            let lower = c.to_ascii_lowercase();
+                            if matches!(
+                                app.new_project.field,
+                                NewProjectField::Name | NewProjectField::Notes
+                            ) && (lower == 'u' || lower == 'w')
+                            {
+                                let is_notes = app.new_project.field == NewProjectField::Notes;
+                                let s = if is_notes {
+                                    &mut app.new_project.notes
+                                } else {
+                                    &mut app.new_project.name
+                                };
+                                if lower == 'u' {
+                                    delete_current_line(s);
+                                } else {
+                                    delete_last_word(s);
+                                }
+                                if is_notes {
+                                    app.new_project.notes_scroll =
+                                        clamp_notes_scroll(&app.new_project.notes, app.new_project.notes_scroll);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+
                     match key.code {
                         KeyCode::Esc => {
                             app.screen = Screen::Picker;
                             app.clear_status();
                         }
-                        // Arrows always move fields (including from Name/Notes).
-                        // j/k only move when not typing in Name/Notes.
                         KeyCode::Down => {
-                            app.new_project.field = app.new_project.field.next();
+                            if app.new_project.field == NewProjectField::Notes {
+                                let n = new_project::notes_lines(&app.new_project.notes).len();
+                                let max_scroll =
+                                    n.saturating_sub(NOTES_VIEWPORT_ROWS as usize) as u16;
+                                if app.new_project.notes_scroll < max_scroll {
+                                    app.new_project.notes_scroll += 1;
+                                } else {
+                                    app.new_project.field = app.new_project.field.next();
+                                }
+                            } else {
+                                app.new_project.field = app.new_project.field.next();
+                            }
                         }
                         KeyCode::Up => {
-                            app.new_project.field = app.new_project.field.prev();
+                            if app.new_project.field == NewProjectField::Notes {
+                                if app.new_project.notes_scroll > 0 {
+                                    app.new_project.notes_scroll -= 1;
+                                } else {
+                                    app.new_project.field = app.new_project.field.prev();
+                                }
+                            } else {
+                                app.new_project.field = app.new_project.field.prev();
+                            }
                         }
                         KeyCode::Char('j')
-                            if !matches!(
-                                app.new_project.field,
-                                NewProjectField::Name | NewProjectField::Notes
-                            ) =>
+                            if !typing_mods
+                                && !matches!(
+                                    app.new_project.field,
+                                    NewProjectField::Name | NewProjectField::Notes
+                                ) =>
                         {
                             app.new_project.field = app.new_project.field.next();
                         }
                         KeyCode::Char('k')
-                            if !matches!(
-                                app.new_project.field,
-                                NewProjectField::Name | NewProjectField::Notes
-                            ) =>
+                            if !typing_mods
+                                && !matches!(
+                                    app.new_project.field,
+                                    NewProjectField::Name | NewProjectField::Notes
+                                ) =>
                         {
                             app.new_project.field = app.new_project.field.prev();
                         }
@@ -2046,15 +2104,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             }
                             _ => {}
                         },
-                        KeyCode::Char(' ') => match app.new_project.field {
+                        KeyCode::Char(' ') if !typing_mods => match app.new_project.field {
                             NewProjectField::Name => {
-                                if app.new_project.name.len() < 64 {
+                                if app.new_project.name.chars().count() < NAME_MAX_CHARS {
                                     app.new_project.name.push(' ');
                                 }
                             }
                             NewProjectField::Notes => {
-                                if app.new_project.notes.len() < 280 {
+                                if app.new_project.notes.chars().count() < NOTES_MAX_CHARS {
                                     app.new_project.notes.push(' ');
+                                    app.new_project.notes_scroll =
+                                        auto_scroll_notes_to_end(&app.new_project.notes);
                                 }
                             }
                             NewProjectField::Template => {
@@ -2084,7 +2144,19 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             NewProjectField::InitAgent => {
                                 app.cycle_new_project_init_agent(1);
                             }
-                            NewProjectField::Create | NewProjectField::Name | NewProjectField::Notes => {
+                            NewProjectField::Name => {
+                                // Enter on Name advances — does not create.
+                                app.new_project.field = app.new_project.field.next();
+                            }
+                            NewProjectField::Notes => {
+                                // Enter inserts newline; create only from Create / Ctrl+Enter.
+                                if app.new_project.notes.chars().count() < NOTES_MAX_CHARS {
+                                    app.new_project.notes.push('\n');
+                                    app.new_project.notes_scroll =
+                                        auto_scroll_notes_to_end(&app.new_project.notes);
+                                }
+                            }
+                            NewProjectField::Create => {
                                 match app.try_create_project() {
                                     Ok(Some(launch)) => return Ok(Some(launch)),
                                     Ok(None) => {}
@@ -2093,30 +2165,46 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             }
                         },
                         KeyCode::Backspace => match app.new_project.field {
-                            NewProjectField::Name => {
-                                app.new_project.name.pop();
-                            }
-                            NewProjectField::Notes => {
-                                app.new_project.notes.pop();
+                            NewProjectField::Name | NewProjectField::Notes => {
+                                let is_notes = app.new_project.field == NewProjectField::Notes;
+                                let s = if is_notes {
+                                    &mut app.new_project.notes
+                                } else {
+                                    &mut app.new_project.name
+                                };
+                                if super_key {
+                                    delete_current_line(s);
+                                } else if alt {
+                                    delete_last_word(s);
+                                } else {
+                                    delete_last_char(s);
+                                }
+                                if is_notes {
+                                    app.new_project.notes_scroll = clamp_notes_scroll(
+                                        &app.new_project.notes,
+                                        app.new_project.notes_scroll,
+                                    );
+                                }
                             }
                             _ => {}
                         },
-                        KeyCode::Char(c) if !c.is_control() => match app.new_project.field {
-                            NewProjectField::Name => {
-                                if app.new_project.name.len() < 64 {
-                                    app.new_project.name.push(c);
+                        KeyCode::Char(c) if !c.is_control() && !typing_mods => {
+                            match app.new_project.field {
+                                NewProjectField::Name => {
+                                    if app.new_project.name.chars().count() < NAME_MAX_CHARS {
+                                        app.new_project.name.push(c);
+                                    }
                                 }
-                            }
-                            NewProjectField::Notes => {
-                                if app.new_project.notes.len() < 280 {
-                                    app.new_project.notes.push(c);
+                                NewProjectField::Notes => {
+                                    if app.new_project.notes.chars().count() < NOTES_MAX_CHARS {
+                                        app.new_project.notes.push(c);
+                                        app.new_project.notes_scroll =
+                                            auto_scroll_notes_to_end(&app.new_project.notes);
+                                    }
                                 }
+                                _ => {}
                             }
-                            NewProjectField::Template if c == 'j' || c == 'k' => {
-                                // j/k already handled above for non-text fields; keep free
-                            }
-                            _ => {}
-                        },
+                        }
                         _ => {}
                     }
                     continue;
@@ -3515,6 +3603,11 @@ fn run_child_app(launch: Launch) -> io::Result<()> {
             eprintln!("Press enter to return to {APP_NAME}...");
             let mut input = String::new();
             let _ = io::stdin().read_line(&mut input);
+        } else if !env_flag_on("MC_INIT_NO_PAUSE") {
+            // Pause on success so the agent summary stays readable (set MC_INIT_NO_PAUSE=1 to skip).
+            eprintln!("init finished — press enter");
+            let mut input = String::new();
+            let _ = io::stdin().read_line(&mut input);
         }
         return Ok(());
     }
@@ -3555,13 +3648,7 @@ fn run_child_app(launch: Launch) -> io::Result<()> {
     Ok(())
 }
 
-// ── New project: scaffold + harness-neutral headless init ─────────────────
-
-struct InitPrompt {
-    project_name: String,
-    template: ProjectTemplate,
-    notes: String,
-}
+// ── New project: form UI (pure helpers live in `new_project`) ──────────────
 
 fn eligible_init_agents() -> Vec<Action> {
     Action::all()
@@ -3597,276 +3684,40 @@ fn resolve_program(action: Action) -> Option<(String, Vec<String>)> {
     Some((program, prefix))
 }
 
-fn compose_init_prompt(p: &InitPrompt) -> String {
-    let notes = p.notes.trim();
-    let notes_block = if notes.is_empty() {
-        "(none — sensible defaults for a new local project)".to_string()
-    } else {
-        notes.to_string()
-    };
-    format!(
-        r#"Bootstrap this brand-new local git repository for agent-assisted development.
-
-Follow the repository /init bootstrap workflow if you have it (AGENTS.md, docs/INDEX.md,
-versioned git hooks, stack detection, quality scripts, verify). If you do not have an
-/init skill, still produce an equivalent professional starter: AGENTS.md, docs/INDEX.md,
-README, .gitignore, and versioned hooks where appropriate.
-
-Rules:
-- Work only inside this repository working directory.
-- Merge with existing starter files; do not delete them blindly.
-- Do not create a GitHub remote or push unless asked.
-- Prefer production-complete defaults; fail loud; no placeholder stubs.
-
-Project name: {name}
-Scaffold template: {template}
-
-User notes about the project:
-{notes}
-
-When finished, summarize files created/changed and any verification you ran."#,
-        name = p.project_name,
-        template = p.template.label(),
-        notes = notes_block,
-    )
-}
-
-/// Build argv for unattended init. Prompt is a single argv element (never shell-interpolated).
-fn build_init_command(action: Action, cwd: &Path, prompt: &str) -> Result<InitCommand, String> {
-    if action == Action::Shell {
-        return Err("shell cannot run headless init".into());
-    }
-    if !action.is_available() {
-        return Err(format!("{} not available", action.label()));
-    }
-    let (program, mut args) = resolve_program(action)
-        .ok_or_else(|| format!("no command for {}", action.label()))?;
-    let cwd_str = cwd.display().to_string();
-
-    // Recipes from local --help + agent docs inventory (see PR notes).
-    // Always also set process cwd when spawning; flags reinforce session root.
+fn action_to_init_kind(action: Action) -> Option<InitAgentKind> {
     match action {
-        Action::Grok => {
-            // -p/--single exits when done; full tools with always-approve.
-            args.extend([
-                "-p".into(),
-                prompt.to_string(),
-                "--cwd".into(),
-                cwd_str,
-                "--always-approve".into(),
-                "--permission-mode".into(),
-                "acceptEdits".into(),
-            ]);
-        }
-        Action::Codex => {
-            args.extend([
-                "exec".into(),
-                "-C".into(),
-                cwd_str,
-                "--sandbox".into(),
-                "workspace-write".into(),
-                prompt.to_string(),
-            ]);
-        }
-        Action::Claude => {
-            args.extend([
-                "-p".into(),
-                prompt.to_string(),
-                "--dangerously-skip-permissions".into(),
-            ]);
-        }
-        Action::Cursor => {
-            // Best-effort: community reports of -p hangs on some versions.
-            args.extend([
-                "-p".into(),
-                "--force".into(),
-                "--trust".into(),
-                "--workspace".into(),
-                cwd_str,
-                "--output-format".into(),
-                "text".into(),
-                prompt.to_string(),
-            ]);
-        }
-        Action::Pi => {
-            // No --cwd; process cwd only. -a trusts project-local resources.
-            args.extend(["-p".into(), "-a".into(), prompt.to_string()]);
-        }
-        Action::Amp => {
-            args.extend(["-x".into(), prompt.to_string()]);
-        }
-        Action::Devin => {
-            args.extend([
-                "-p".into(),
-                prompt.to_string(),
-                "--permission-mode".into(),
-                "accept-edits".into(),
-            ]);
-        }
-        Action::Droid => {
-            // Default exec is read-only; need --auto medium+ to write.
-            args.extend([
-                "exec".into(),
-                "--cwd".into(),
-                cwd_str,
-                "--auto".into(),
-                "medium".into(),
-                prompt.to_string(),
-            ]);
-        }
-        Action::Shell => unreachable!(),
+        Action::Grok => Some(InitAgentKind::Grok),
+        Action::Codex => Some(InitAgentKind::Codex),
+        Action::Pi => Some(InitAgentKind::Pi),
+        Action::Cursor => Some(InitAgentKind::Cursor),
+        Action::Claude => Some(InitAgentKind::Claude),
+        Action::Amp => Some(InitAgentKind::Amp),
+        Action::Devin => Some(InitAgentKind::Devin),
+        Action::Droid => Some(InitAgentKind::Droid),
+        Action::Shell => None,
     }
-
-    Ok(InitCommand {
-        program,
-        args,
-        cwd: cwd.to_path_buf(),
-    })
 }
 
-fn slugify_project_name(raw: &str) -> Result<String, String> {
-    let s = raw.trim().to_lowercase();
-    let mut out = String::new();
-    let mut prev_dash = false;
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-            prev_dash = false;
-        } else if matches!(c, ' ' | '_' | '-' | '.') {
-            if !out.is_empty() && !prev_dash {
-                out.push('-');
-                prev_dash = true;
-            }
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    if out.is_empty() {
-        return Err("name required".into());
-    }
-    if out == "." || out == ".." || out.contains('/') {
-        return Err("invalid name".into());
-    }
-    Ok(out)
+fn init_agent_elevated(action: Action) -> bool {
+    action_to_init_kind(action)
+        .map(|k| k.elevated_autonomy())
+        .unwrap_or(false)
 }
 
-const SCAFFOLD_GITIGNORE: &str = "\
-.DS_Store
-.env
-.env.*
-!.env.example
-*.log
-.idea/
-.vscode/
-node_modules/
-target/
-dist/
-build/
-";
-
-fn create_scaffold(
-    parent: &Path,
-    slug: &str,
-    template: ProjectTemplate,
-    notes: &str,
-) -> Result<PathBuf, String> {
-    if !command_available("git") {
-        return Err("git not found on PATH".into());
-    }
-    if !parent.is_dir() {
-        return Err("parent is not a directory".into());
-    }
-    let target = parent.join(slug);
-    if target.exists() {
-        return Err(format!("{} already exists", display_path(&target)));
-    }
-    fs::create_dir_all(&target).map_err(|e| format!("mkdir: {e}"))?;
-
-    let notes_trim = notes.trim();
-    let notes_section = if notes_trim.is_empty() {
-        String::new()
+fn field_row_style(
+    selected: bool,
+    dim_placeholder: bool,
+    t: &Theme,
+) -> Style {
+    if selected {
+        Style::default()
+            .fg(ACCENT_ON)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else if dim_placeholder {
+        Style::default().fg(t.dim).bg(t.bg)
     } else {
-        format!("\n{notes_trim}\n")
-    };
-
-    let readme = match template {
-        ProjectTemplate::Minimal => format!(
-            "# {slug}\n\nScaffolded by T-0.{notes_section}"
-        ),
-        ProjectTemplate::Agent => format!(
-            "# {slug}\n\nScaffolded by T-0. Thin agent-ready starter — your init agent will expand this.\n{notes_section}"
-        ),
-    };
-    fs::write(target.join("README.md"), readme).map_err(|e| format!("README: {e}"))?;
-    fs::write(target.join(".gitignore"), SCAFFOLD_GITIGNORE)
-        .map_err(|e| format!(".gitignore: {e}"))?;
-
-    if template == ProjectTemplate::Agent {
-        fs::create_dir_all(target.join("docs")).map_err(|e| format!("docs/: {e}"))?;
-        let agents = format!(
-            r#"# AGENTS.md
-
-Start with **[docs/INDEX.md](./docs/INDEX.md)**.
-
-## Project
-
-- **Name:** {slug}
-- **Scaffold:** T-0 agent template (run agent init / `/init` to complete bootstrap)
-
-## Code principles
-
-1. Production-complete or hard-fail
-2. Fail loud
-3. Small, focused diffs
-4. Evidence before claims
-"#
-        );
-        fs::write(target.join("AGENTS.md"), agents).map_err(|e| format!("AGENTS.md: {e}"))?;
-        let index = format!(
-            r#"# docs/INDEX.md
-
-Recovery map for **{slug}**.
-
-| Doc | Why |
-|-----|-----|
-| [../README.md](../README.md) | Project overview |
-| [../AGENTS.md](../AGENTS.md) | Agent instructions |
-
-Add architecture and workflow links as the project grows.
-"#
-        );
-        fs::write(target.join("docs/INDEX.md"), index)
-            .map_err(|e| format!("docs/INDEX.md: {e}"))?;
-    }
-
-    let path_str = target.display().to_string();
-    let init = Command::new("git")
-        .args(["-C", &path_str, "init", "-b", "main"])
-        .status()
-        .map_err(|e| format!("git init: {e}"))?;
-    if !init.success() {
-        let _ = fs::remove_dir_all(&target);
-        return Err("git init failed".into());
-    }
-    let _ = Command::new("git")
-        .args(["-C", &path_str, "add", "-A"])
-        .status();
-    // Commit may fail without user.email — scaffold still succeeds.
-    let _ = Command::new("git")
-        .args(["-C", &path_str, "commit", "-m", "chore: scaffold from t0"])
-        .status();
-
-    Ok(target)
-}
-
-/// Pad to `width` display cells so background fully covers picker bleed-through.
-fn pad_line(s: &str, width: usize) -> String {
-    let count = s.chars().count();
-    if count >= width {
-        s.chars().take(width).collect()
-    } else {
-        format!("{s}{}", " ".repeat(width - count))
+        Style::default().fg(t.soft).bg(t.bg)
     }
 }
 
@@ -3877,7 +3728,6 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
     app.panel_area = area;
 
     // Opaque layer: Clear removes underneath glyphs; solid fill paints every cell.
-    // Without this, short Paragraph lines leave picker text bleeding through.
     frame.render_widget(Clear, area);
     frame.render_widget(
         Block::default().style(Style::default().bg(t.bg).fg(t.text)),
@@ -3892,17 +3742,21 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(block, area);
 
     let inner = inset(area, 2, 1);
-    // Fill inner again so margins/padding never show picker content.
     frame.render_widget(
         Block::default().style(Style::default().bg(t.bg)),
         inner,
     );
 
+    // help 1 · Name/Parent/Template/Init 4 · Notes label 1 · notes box 3 · Create 1 · status 1
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // help
-            Constraint::Min(8),    // fields
+            Constraint::Length(4), // name / parent / template / init
+            Constraint::Length(1), // notes label
+            Constraint::Length(NOTES_VIEWPORT_ROWS), // notes box
+            Constraint::Length(1), // create
+            Constraint::Min(0),    // filler (opaque)
             Constraint::Length(1), // status
         ])
         .split(inner);
@@ -3911,7 +3765,7 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             pad_line(
-                "tab fields · ←/→ cycle · enter create+init · esc close",
+                "tab fields · enter newline in notes · ctrl-enter create · opt-bs word · ctrl-u line · esc",
                 col_w,
             ),
             Style::default().fg(t.dim).bg(t.bg),
@@ -3926,18 +3780,23 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
         app.new_project.name.clone()
     };
     let parent_display = display_path(&app.new_project.parent);
-    let init_label = app
+    let elevated = app
         .new_project
         .init_agent
-        .map(|a| a.label().to_string())
-        .unwrap_or_else(|| "none (scaffold only)".into());
-    let notes_display = if app.new_project.notes.is_empty() {
-        "optional — what is this project?".to_string()
-    } else {
-        app.new_project.notes.clone()
+        .map(init_agent_elevated)
+        .unwrap_or(false);
+    let init_label = match app.new_project.init_agent {
+        Some(a) if elevated => format!("{} · full tools", a.label()),
+        Some(a) => a.label().to_string(),
+        None => "none (scaffold only)".into(),
+    };
+    let create_label = match app.new_project.init_agent {
+        Some(_) if elevated => "scaffold + headless init · full tools",
+        Some(_) => "scaffold + headless init",
+        None => "scaffold only",
     };
 
-    let rows: [(&str, String, NewProjectField); 6] = [
+    let top_rows: [(&str, String, NewProjectField); 4] = [
         ("Name", name_display, NewProjectField::Name),
         (
             "Parent",
@@ -3950,30 +3809,16 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
             NewProjectField::Template,
         ),
         ("Init agent", init_label, NewProjectField::InitAgent),
-        ("Notes", notes_display, NewProjectField::Notes),
-        ("Create", "scaffold + headless init".into(), NewProjectField::Create),
     ];
 
     let field_w = chunks[1].width.max(1) as usize;
-    let mut lines = Vec::new();
-    for (label, value, field) in rows {
+    let mut top_lines = Vec::new();
+    for (label, value, field) in top_rows {
         let selected = app.new_project.field == field;
-        let style = if selected {
-            Style::default()
-                .fg(ACCENT_ON)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD)
-        } else if field == NewProjectField::Notes && app.new_project.notes.is_empty() {
-            Style::default().fg(t.dim).bg(t.bg)
-        } else {
-            Style::default().fg(t.soft).bg(t.bg)
-        };
+        let style = field_row_style(selected, false, &t);
         let marker = if selected { ">" } else { " " };
-        let value_out = if selected && matches!(field, NewProjectField::Name | NewProjectField::Notes)
-        {
-            if (field == NewProjectField::Name && app.new_project.name.is_empty())
-                || (field == NewProjectField::Notes && app.new_project.notes.is_empty())
-            {
+        let value_out = if selected && field == NewProjectField::Name {
+            if app.new_project.name.is_empty() {
                 format!("▌{value}")
             } else {
                 format!("{value}▌")
@@ -3982,39 +3827,104 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
             value
         };
         let raw = format!("{marker} {label:<11} {value_out}");
-        lines.push(Line::from(Span::styled(pad_line(&raw, field_w), style)));
-    }
-    // Pad remaining rows in the field area with blank bg lines so nothing peeks through.
-    let rows_h = chunks[1].height as usize;
-    while lines.len() < rows_h {
-        lines.push(Line::from(Span::styled(
-            pad_line("", field_w),
-            Style::default().bg(t.bg).fg(t.text),
-        )));
+        top_lines.push(Line::from(Span::styled(pad_line(&raw, field_w), style)));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(t.bg)),
+        Paragraph::new(top_lines).style(Style::default().bg(t.bg)),
         chunks[1],
     );
 
-    let status_w = chunks[2].width.max(1) as usize;
-    let status_text = app
-        .status
-        .as_deref()
-        .unwrap_or(" ");
+    // Notes label row
+    let notes_selected = app.new_project.field == NewProjectField::Notes;
+    let notes_label_style = field_row_style(notes_selected, false, &t);
+    let notes_marker = if notes_selected { ">" } else { " " };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            pad_line(&format!("{notes_marker} {:<11}", "Notes"), field_w),
+            notes_label_style,
+        )))
+        .style(Style::default().bg(t.bg)),
+        chunks[2],
+    );
+
+    // 3-row notes viewport (append-mode caret at end of text).
+    app.new_project.notes_scroll =
+        clamp_notes_scroll(&app.new_project.notes, app.new_project.notes_scroll);
+    let viewport = notes_viewport(&app.new_project.notes, app.new_project.notes_scroll);
+    let notes_empty = app.new_project.notes.is_empty();
+    let notes_box_w = chunks[3].width.max(1) as usize;
+    let end_line_idx = new_project::notes_lines(&app.new_project.notes)
+        .len()
+        .saturating_sub(1);
+    let mut note_lines = Vec::new();
+    for (i, line) in viewport.iter().enumerate() {
+        let line_idx = app.new_project.notes_scroll as usize + i;
+        let mut text = if notes_empty && i == 0 {
+            "optional — what is this project?".to_string()
+        } else {
+            line.clone()
+        };
+        if notes_selected && line_idx == end_line_idx {
+            text = if notes_empty {
+                format!("▌{text}")
+            } else {
+                format!("{text}▌")
+            };
+        }
+        let style = if notes_selected {
+            Style::default().fg(ACCENT_ON).bg(ACCENT)
+        } else if notes_empty {
+            Style::default().fg(t.dim).bg(t.bg)
+        } else {
+            Style::default().fg(t.soft).bg(t.bg)
+        };
+        // Indent content so it sits under the value column.
+        let raw = format!("  {text}");
+        note_lines.push(Line::from(Span::styled(pad_line(&raw, notes_box_w), style)));
+    }
+    frame.render_widget(
+        Paragraph::new(note_lines).style(Style::default().bg(t.bg)),
+        chunks[3],
+    );
+
+    // Create row
+    let create_selected = app.new_project.field == NewProjectField::Create;
+    let create_style = field_row_style(create_selected, false, &t);
+    let create_marker = if create_selected { ">" } else { " " };
+    let create_raw = format!("{create_marker} {:<11} {create_label}", "Create");
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            pad_line(&create_raw, chunks[4].width.max(1) as usize),
+            create_style,
+        )))
+        .style(Style::default().bg(t.bg)),
+        chunks[4],
+    );
+
+    // Filler keeps opacity if popup is taller than content.
+    if chunks[5].height > 0 {
+        frame.render_widget(
+            Block::default().style(Style::default().bg(t.bg)),
+            chunks[5],
+        );
+    }
+
+    let status_w = chunks[6].width.max(1) as usize;
+    let status_text = app.status.as_deref().unwrap_or(" ");
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             pad_line(status_text, status_w),
             Style::default().fg(ACCENT).bg(t.bg),
         )))
         .style(Style::default().bg(t.bg)),
-        chunks[2],
+        chunks[6],
     );
 }
 
 fn new_project_popup_rect(screen: Rect) -> Rect {
-    let width = screen.width.min(72).max(40);
-    let height = screen.height.saturating_sub(4).min(16).max(12);
+    let width = screen.width.min(76).max(44);
+    // Taller for multi-line notes (help+4 fields+label+3 notes+create+status ≈ 12 + chrome).
+    let height = screen.height.saturating_sub(2).min(22).max(18);
     Rect {
         x: screen.x + screen.width.saturating_sub(width) / 2,
         y: screen.y + screen.height.saturating_sub(height) / 2,
