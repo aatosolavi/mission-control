@@ -597,7 +597,6 @@ impl LauncherState {
         Some(Launch {
             cwd: cwd.clone(),
             action: action.resolve_available(),
-            init: None,
         })
     }
 }
@@ -605,8 +604,6 @@ impl LauncherState {
 struct Launch {
     action: Action,
     cwd: PathBuf,
-    /// When set, run a harness-neutral headless init recipe (argv, no shell).
-    init: Option<InitCommand>,
 }
 
 #[derive(Default)]
@@ -886,6 +883,20 @@ enum InstallEvent {
     },
 }
 
+/// Background headless project init (stays in TUI; streams agent output into the bar).
+struct BgInitUi {
+    agent: Action,
+    project: String,
+    message: String,
+    finished_at: Option<Instant>,
+    failed: bool,
+}
+
+enum BgInitEvent {
+    Line(String),
+    Done { ok: bool, summary: String },
+}
+
 struct App {
     state: LauncherState,
     repos: Vec<Repo>,
@@ -907,6 +918,9 @@ struct App {
     /// Active or finishing CLI install.
     install: Option<InstallUi>,
     install_rx: Option<Receiver<InstallEvent>>,
+    /// Background headless init after New Project create.
+    bg_init: Option<BgInitUi>,
+    bg_init_rx: Option<Receiver<BgInitEvent>>,
     /// Hover dwell before auto-install of a missing CLI.
     hover_missing: Option<(Action, Instant)>,
     /// Last drawn panel rect (for progress bar placement).
@@ -942,6 +956,8 @@ impl App {
             new_project: NewProjectForm::open(root, init_default),
             install: None,
             install_rx: None,
+            bg_init: None,
+            bg_init_rx: None,
             hover_missing: None,
             panel_area: Rect::default(),
             esc_meta_armed_at: None,
@@ -1073,8 +1089,8 @@ impl App {
         }
     }
 
-    /// Scaffold project; returns Launch for headless init, or None if scaffold-only.
-    fn try_create_project(&mut self) -> Result<Option<Launch>, String> {
+    /// Scaffold project; optionally start background headless init (stay in TUI).
+    fn try_create_project(&mut self) -> Result<(), String> {
         let slug = slugify_project_name(&self.new_project.name)?;
         let target = create_scaffold(
             &self.new_project.parent,
@@ -1094,7 +1110,7 @@ impl App {
 
         let Some(action) = init_agent else {
             self.set_status(format!("created {} · scaffold only", display_path(&target)));
-            return Ok(None);
+            return Ok(());
         };
 
         if !action.is_available() {
@@ -1103,7 +1119,7 @@ impl App {
                 display_path(&target),
                 action.label()
             ));
-            return Ok(None);
+            return Ok(());
         }
 
         let kind = action_to_init_kind(action)
@@ -1116,18 +1132,187 @@ impl App {
             notes,
         });
         let cmd = build_init_command(kind, program, prefix, &target, &prompt);
+
+        // Remember last launch / agent for this workspace.
+        self.prepare_launch(&Launch {
+            action,
+            cwd: target.clone(),
+        });
+
+        self.start_background_init(action, cmd, display_path(&target));
+        Ok(())
+    }
+
+    fn bg_init_busy(&self) -> bool {
+        matches!(
+            &self.bg_init,
+            Some(BgInitUi {
+                finished_at: None,
+                ..
+            })
+        )
+    }
+
+    /// Spawn headless init in a background thread; stream lines into the TUI bar.
+    fn start_background_init(&mut self, action: Action, cmd: InitCommand, project: String) {
+        if self.bg_init_busy() {
+            self.set_status("init already running");
+            return;
+        }
+
+        if env_flag_on("MC_INIT_DRY_RUN") {
+            self.set_status(format!(
+                "created {project} · dry-run: {} {:?}",
+                cmd.program, cmd.args
+            ));
+            return;
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.bg_init_rx = Some(rx);
+        self.bg_init = Some(BgInitUi {
+            agent: action,
+            project: project.clone(),
+            message: format!("starting {}…", action.label().to_ascii_lowercase()),
+            finished_at: None,
+            failed: false,
+        });
         self.set_status(format!(
-            "created {} · running {} init…",
-            display_path(&target),
+            "created {project} · {} init in background…",
             action.label()
         ));
-        let launch = Launch {
-            action,
-            cwd: target,
-            init: Some(cmd),
+
+        let label = action.label().to_string();
+        thread::spawn(move || {
+            let mut child = match Command::new(&cmd.program)
+                .args(&cmd.args)
+                .current_dir(&cmd.cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(BgInitEvent::Done {
+                        ok: false,
+                        summary: format!("failed to start {label}: {e}"),
+                    });
+                    return;
+                }
+            };
+
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            let tx_out = tx.clone();
+            let tx_err = tx.clone();
+            let out_h = thread::spawn(move || {
+                if let Some(out) = stdout {
+                    for line in BufReader::new(out).lines().flatten() {
+                        if tx_out.send(BgInitEvent::Line(line)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+            let err_h = thread::spawn(move || {
+                if let Some(err) = stderr {
+                    for line in BufReader::new(err).lines().flatten() {
+                        if tx_err.send(BgInitEvent::Line(line)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+            let _ = out_h.join();
+            let _ = err_h.join();
+
+            match child.wait() {
+                Ok(status) if status.success() => {
+                    let _ = tx.send(BgInitEvent::Done {
+                        ok: true,
+                        summary: format!("{label} init finished"),
+                    });
+                }
+                Ok(status) => {
+                    let _ = tx.send(BgInitEvent::Done {
+                        ok: false,
+                        summary: format!("{label} init exited {status}"),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgInitEvent::Done {
+                        ok: false,
+                        summary: format!("{label} init wait failed: {e}"),
+                    });
+                }
+            }
+        });
+    }
+
+    fn poll_bg_init(&mut self) {
+        let Some(rx) = self.bg_init_rx.as_ref() else {
+            if let Some(ui) = &self.bg_init {
+                if let Some(done_at) = ui.finished_at {
+                    // Linger longer than install — user should read the result.
+                    if done_at.elapsed() >= Duration::from_secs(6) {
+                        self.bg_init = None;
+                    }
+                }
+            }
+            return;
         };
-        self.prepare_launch(&launch);
-        Ok(Some(launch))
+
+        loop {
+            match rx.try_recv() {
+                Ok(BgInitEvent::Line(line)) => {
+                    let msg = truncate_status_line(&line, 72);
+                    if let Some(ui) = &mut self.bg_init {
+                        ui.message = msg;
+                    }
+                }
+                Ok(BgInitEvent::Done { ok, summary }) => {
+                    let project = self
+                        .bg_init
+                        .as_ref()
+                        .map(|u| u.project.clone())
+                        .unwrap_or_default();
+                    let agent = self
+                        .bg_init
+                        .as_ref()
+                        .map(|u| u.agent)
+                        .unwrap_or(Action::Shell);
+                    let msg = truncate_status_line(&summary, 72);
+                    self.bg_init = Some(BgInitUi {
+                        agent,
+                        project: project.clone(),
+                        message: msg.clone(),
+                        finished_at: Some(Instant::now()),
+                        failed: !ok,
+                    });
+                    self.bg_init_rx = None;
+                    if ok {
+                        self.set_status(format!("{project} · {msg}"));
+                    } else {
+                        self.set_status(format!("{project} · {msg}"));
+                    }
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.bg_init_rx = None;
+                    break;
+                }
+            }
+        }
+
+        if let Some(ui) = &self.bg_init {
+            if let Some(done_at) = ui.finished_at {
+                if done_at.elapsed() >= Duration::from_secs(6) {
+                    self.bg_init = None;
+                }
+            }
+        }
     }
 
     fn install_busy(&self) -> bool {
@@ -1405,7 +1590,6 @@ impl App {
         Some(Launch {
             action: self.selected_action,
             cwd: repo.path.clone(),
-            init: None,
         })
     }
 
@@ -1922,6 +2106,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     loop {
         app.tick_status();
         app.poll_install();
+        app.poll_bg_init();
         app.tick_hover_install();
         terminal.draw(|frame| match app.screen {
             Screen::Picker => draw(frame, &mut app),
@@ -1934,9 +2119,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             }
         })?;
 
-        // Poll shorter while a status flash, install bar, or Esc-meta arm is active.
+        // Poll shorter while status / install / bg init / Esc-meta is active.
         let poll_ms = if app.status.is_some()
             || app.install.is_some()
+            || app.bg_init.is_some()
             || app.esc_meta_armed_at.is_some()
         {
             40
@@ -2070,10 +2256,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
                     // Ctrl+Enter always creates from any field.
                     if matches!(key.code, KeyCode::Enter) && ctrl {
-                        match app.try_create_project() {
-                            Ok(Some(launch)) => return Ok(Some(launch)),
-                            Ok(None) => {}
-                            Err(err) => app.set_status(err),
+                        if let Err(err) = app.try_create_project() {
+                            app.set_status(err);
                         }
                         continue;
                     }
@@ -2217,10 +2401,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 app.open_new_project_parent_picker();
                             }
                             NewProjectField::Create => {
-                                match app.try_create_project() {
-                                    Ok(Some(launch)) => return Ok(Some(launch)),
-                                    Ok(None) => {}
-                                    Err(err) => app.set_status(err),
+                                if let Err(err) = app.try_create_project() {
+                                    app.set_status(err);
                                 }
                             }
                         },
@@ -2247,10 +2429,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 }
                             }
                             NewProjectField::Create => {
-                                match app.try_create_project() {
-                                    Ok(Some(launch)) => return Ok(Some(launch)),
-                                    Ok(None) => {}
-                                    Err(err) => app.set_status(err),
+                                if let Err(err) = app.try_create_project() {
+                                    app.set_status(err);
                                 }
                             }
                         },
@@ -2544,18 +2724,15 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(footer, chunks[4]);
 
     draw_install_bar(frame, app, t);
+    draw_bg_init_bar(frame, app, t);
 }
 
-fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
-    let Some(ui) = &app.install else {
-        return;
-    };
+fn panel_bar_area(frame: &Frame<'_>, app: &App, row_offset: u16) -> Option<Rect> {
     let panel = app.panel_area;
     let screen = frame.area();
-    // Place just below the main panel when there's room; otherwise clamp to bottom.
-    let y = (panel.y + panel.height).min(screen.height.saturating_sub(2));
+    let y = (panel.y + panel.height + row_offset).min(screen.height.saturating_sub(2));
     if y + 1 >= screen.height {
-        return;
+        return None;
     }
     let bar_area = Rect {
         x: panel.x,
@@ -2564,8 +2741,19 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
         height: 2,
     };
     if bar_area.y + bar_area.height > screen.y + screen.height {
-        return;
+        return None;
     }
+    Some(bar_area)
+}
+
+fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
+    let Some(ui) = &app.install else {
+        return;
+    };
+    // If bg init is also active, install sits on first row pair; bg init below.
+    let Some(bar_area) = panel_bar_area(frame, app, 0) else {
+        return;
+    };
 
     let label = ui.action.label().to_ascii_lowercase();
     let pct = (ui.fraction * 100.0).round() as u16;
@@ -2576,11 +2764,7 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
     } else {
         format!("installing {label}  {pct}%")
     };
-    let msg = if ui.message.len() > bar_area.width as usize {
-        format!("{}…", &ui.message[..bar_area.width.saturating_sub(1) as usize])
-    } else {
-        ui.message.clone()
-    };
+    let msg = truncate_status_line(&ui.message, bar_area.width as usize);
 
     let color = if ui.failed {
         Color::Red
@@ -2608,7 +2792,6 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
         "█".repeat(filled),
         "░".repeat(inner_w.saturating_sub(filled))
     );
-    // Prefer showing live install log line if it fits; else the bar.
     let line2 = if !msg.is_empty() && ui.finished_at.is_none() && !ui.failed {
         msg
     } else {
@@ -2626,6 +2809,67 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
             height: 1,
         },
     );
+}
+
+fn draw_bg_init_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
+    let Some(ui) = &app.bg_init else {
+        return;
+    };
+    // Stack under install bar when both present.
+    let offset = if app.install.is_some() { 2 } else { 0 };
+    let Some(bar_area) = panel_bar_area(frame, app, offset) else {
+        return;
+    };
+
+    let agent = ui.agent.label().to_ascii_lowercase();
+    let head = if ui.failed {
+        format!("init {agent} failed · {}", ui.project)
+    } else if ui.finished_at.is_some() {
+        format!("init {agent} done · {}", ui.project)
+    } else {
+        format!("init {agent}… · {}", ui.project)
+    };
+    let color = if ui.failed {
+        Color::Red
+    } else {
+        ACCENT
+    };
+    let msg = truncate_status_line(&ui.message, bar_area.width as usize);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_status_line(&head, bar_area.width as usize),
+            Style::default().fg(color).bg(t.bg),
+        ))),
+        Rect {
+            x: bar_area.x,
+            y: bar_area.y,
+            width: bar_area.width,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(if ui.failed { Color::Red } else { t.soft }).bg(t.bg),
+        ))),
+        Rect {
+            x: bar_area.x,
+            y: bar_area.y + 1,
+            width: bar_area.width,
+            height: 1,
+        },
+    );
+}
+
+fn truncate_status_line(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_width(s) <= width {
+        return s.to_string();
+    }
+    sliding_tail(s, width)
 }
 
 /// Known install recipes for missing agent CLIs (run via `sh -lc`).
@@ -3109,26 +3353,26 @@ fn discover_repos(state: &LauncherState) -> Vec<Repo> {
     let home = home_dir();
     let data = data_dir();
     let root = workspace_root(&state.settings);
-    let mut repos = Vec::new();
+    let mut candidates: Vec<(PathBuf, &'static str)> = Vec::new();
     let mut seen = HashSet::new();
 
     // 1) Favorites first (pin order, newest pin first).
     for path in &state.favorites {
-        add_repo(&mut repos, &mut seen, path.clone(), "★", state);
+        push_candidate(&mut candidates, &mut seen, path.clone(), "★");
     }
 
     // 2) Recents.
     for recent in read_recent_workspaces(&data) {
-        add_repo(&mut repos, &mut seen, recent, "recent", state);
+        push_candidate(&mut candidates, &mut seen, recent, "recent");
     }
 
     // 3) Last terminal cwd.
     if let Some(last_cwd) = read_last_cwd(&data) {
-        add_repo(&mut repos, &mut seen, last_cwd, "last", state);
+        push_candidate(&mut candidates, &mut seen, last_cwd, "last");
     }
 
     // 4) Workspace root + git children.
-    add_repo(&mut repos, &mut seen, root.clone(), "root", state);
+    push_candidate(&mut candidates, &mut seen, root.clone(), "root");
 
     if let Ok(entries) = fs::read_dir(&root) {
         let mut paths: Vec<PathBuf> = entries
@@ -3148,90 +3392,99 @@ fn discover_repos(state: &LauncherState) -> Vec<Repo> {
         paths.sort_by_key(|path| path.file_name().map(|name| name.to_os_string()));
 
         for path in paths {
-            add_repo(&mut repos, &mut seen, path, "", state);
+            push_candidate(&mut candidates, &mut seen, path, "");
         }
     }
 
-    if repos.is_empty() {
-        add_repo(&mut repos, &mut seen, home, "home", state);
+    if candidates.is_empty() {
+        push_candidate(&mut candidates, &mut seen, home, "home");
     }
 
-    repos
+    // Fan the git snapshots out — startup was dominated by serial git spawns.
+    // ponytail: one thread per repo; chunk if workspaces ever hit hundreds of repos.
+    let handles: Vec<_> = candidates
+        .iter()
+        .map(|(path, _)| {
+            let path = path.clone();
+            thread::spawn(move || inspect_git(&path))
+        })
+        .collect();
+
+    candidates
+        .into_iter()
+        .zip(handles)
+        .map(|((path, badge), handle)| {
+            let (git_branch, git_dirty, git_ahead) =
+                handle.join().unwrap_or((None, false, 0));
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let remembered_agent = state.agent_for(&path);
+            Repo {
+                name,
+                path,
+                badge,
+                git_branch,
+                git_dirty,
+                git_ahead,
+                remembered_agent,
+            }
+        })
+        .collect()
 }
 
-fn add_repo(
-    repos: &mut Vec<Repo>,
+fn push_candidate(
+    candidates: &mut Vec<(PathBuf, &'static str)>,
     seen: &mut HashSet<PathBuf>,
     path: PathBuf,
     badge: &'static str,
-    state: &LauncherState,
 ) {
-    if !path.is_dir() || !seen.insert(path.clone()) {
-        return;
+    if path.is_dir() && seen.insert(path.clone()) {
+        candidates.push((path, badge));
     }
-
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
-    let (git_branch, git_dirty, git_ahead) = inspect_git(&path);
-    let remembered_agent = state.agent_for(&path);
-    repos.push(Repo {
-        name,
-        path,
-        badge,
-        git_branch,
-        git_dirty,
-        git_ahead,
-        remembered_agent,
-    });
 }
 
-/// Fast-ish git snapshot for row metadata. Failures → no git badge.
+/// Git snapshot for row metadata in a single spawn: `status --porcelain=v2 --branch`
+/// carries branch, dirty, and ahead at once (also covers worktrees / nested repos).
+/// Failures → no git badge.
 fn inspect_git(path: &Path) -> (Option<String>, bool, u32) {
-    if !path.join(".git").exists() {
-        // Also accept worktrees / nested: try rev-parse
-        let ok = Command::new("git")
-            .args(["-C", &path.display().to_string(), "rev-parse", "--is-inside-work-tree"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !ok {
-            return (None, false, 0);
+    let output = match Command::new("git")
+        .args([
+            "-C",
+            &path.display().to_string(),
+            "status",
+            "--porcelain=v2",
+            "--branch",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return (None, false, 0),
+    };
+    parse_porcelain_v2(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_porcelain_v2(text: &str) -> (Option<String>, bool, u32) {
+    let mut branch = None;
+    let mut dirty = false;
+    let mut ahead = 0u32;
+    for line in text.lines() {
+        if let Some(head) = line.strip_prefix("# branch.head ") {
+            if head != "(detached)" && !head.is_empty() {
+                branch = Some(head.to_string());
+            }
+        } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
+            ahead = ab
+                .split_whitespace()
+                .next()
+                .and_then(|a| a.strip_prefix('+'))
+                .and_then(|a| a.parse().ok())
+                .unwrap_or(0);
+        } else if !line.starts_with('#') && !line.is_empty() {
+            dirty = true;
         }
     }
-
-    let path_str = path.display().to_string();
-
-    let branch = Command::new("git")
-        .args(["-C", &path_str, "rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty() && s != "HEAD");
-
-    let dirty = Command::new("git")
-        .args(["-C", &path_str, "status", "--porcelain"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
-
-    let ahead = Command::new("git")
-        .args(["-C", &path_str, "rev-list", "--count", "@{u}..HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<u32>()
-                .ok()
-        })
-        .unwrap_or(0);
-
     (branch, dirty, ahead)
 }
 
@@ -3647,61 +3900,7 @@ fn run_child_app(launch: Launch) -> io::Result<()> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     record_recent_workspace(&launch.cwd);
 
-    // Harness-neutral headless init: argv only, no shell interpolation of user notes.
-    if let Some(init) = launch.init {
-        if env::var("MC_INIT_DRY_RUN").ok().as_deref() == Some("1") {
-            eprintln!(
-                "[{APP_NAME} init dry-run] {} {:?} cwd={}",
-                init.program,
-                init.args,
-                init.cwd.display()
-            );
-            eprintln!("Press enter to return to {APP_NAME}...");
-            let mut input = String::new();
-            let _ = io::stdin().read_line(&mut input);
-            return Ok(());
-        }
-        eprintln!(
-            "[{APP_NAME}] headless init via {} in {}",
-            launch.action.label(),
-            init.cwd.display()
-        );
-        // Spawn failures must not kill the launcher — scaffold already exists; return to picker.
-        let status = match Command::new(&init.program)
-            .args(&init.args)
-            .current_dir(&init.cwd)
-            .status()
-        {
-            Ok(status) => status,
-            Err(err) => {
-                eprintln!(
-                    "[{} init failed to start: {}]",
-                    launch.action.label(),
-                    err
-                );
-                eprintln!("Press enter to return to {APP_NAME}...");
-                let mut input = String::new();
-                let _ = io::stdin().read_line(&mut input);
-                return Ok(());
-            }
-        };
-        if !status.success() {
-            eprintln!(
-                "[{} init exited with {}]",
-                launch.action.label(),
-                status
-            );
-            eprintln!("Press enter to return to {APP_NAME}...");
-            let mut input = String::new();
-            let _ = io::stdin().read_line(&mut input);
-        } else if !env_flag_on("MC_INIT_NO_PAUSE") {
-            // Pause on success so the agent summary stays readable (set MC_INIT_NO_PAUSE=1 to skip).
-            eprintln!("init finished — press enter");
-            let mut input = String::new();
-            let _ = io::stdin().read_line(&mut input);
-        }
-        return Ok(());
-    }
+    // Headless project init runs in-background inside the TUI (see start_background_init).
 
     let Some(command) = launch.action.resolve_command() else {
         return replace_with_shell(launch);
@@ -4066,4 +4265,24 @@ fn hit_test_new_project_field(inner: Rect, row: u16) -> Option<NewProjectField> 
         return Some(NewProjectField::Create);
     }
     None // filler / status
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_porcelain_v2;
+
+    #[test]
+    fn porcelain_v2_branch_dirty_ahead() {
+        let clean = "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +3 -0\n";
+        assert_eq!(parse_porcelain_v2(clean), (Some("main".into()), false, 3));
+
+        let dirty = "# branch.oid abc\n# branch.head feat/x\n1 .M N... 100644 100644 100644 abc def src/main.rs\n";
+        assert_eq!(parse_porcelain_v2(dirty), (Some("feat/x".into()), true, 0));
+
+        let detached = "# branch.oid abc\n# branch.head (detached)\n";
+        assert_eq!(parse_porcelain_v2(detached), (None, false, 0));
+
+        // No upstream → no branch.ab line → ahead 0.
+        assert_eq!(parse_porcelain_v2("# branch.head main\n"), (Some("main".into()), false, 0));
+    }
 }
