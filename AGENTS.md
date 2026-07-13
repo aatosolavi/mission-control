@@ -51,6 +51,15 @@ Semver `MAJOR.MINOR.PATCH`, currently on **0.x**.
 
 Keep these aligned on a release: `package.json`, `terminal/launcher-ratatui/Cargo.toml` (+ lockfile), `extension/manifest.json` if touched, `CHANGELOG.md`, git tag `vX.Y.Z`, GitHub release.
 
+## Terminal motion budget (t0 launcher)
+
+- **One live region.** The status line is the only place that changes without input at rest. Tips, flashes, and job-adjacent copy compete for that slot — never two independent moving decorations at once.
+- **One-shot animations:** ≤300 ms, 3–5 frames, only in response to a user action.
+- **Continuous animation** only while a real background job runs (install / headless init). Spinner lives on the job bar; tips pause while jobs run.
+- **Idle:** never faster than ~one redraw per 30 s for decoration (tips). Faster idle loops burn battery for no product value.
+- **Fake fade:** terminals cannot alpha-fade; use a 3-step color ramp (dim → muted → text) over 3 frames at 40 ms poll. Reuse the status active path.
+- **Do not:** smooth-scroll selection, pulse dirty `*` or any per-row idle motion, idle easter eggs that force continuous redraw, or animate two places simultaneously. Do not delay the launch/exec path for branding.
+
 ## Do not reintroduce without intent
 
 - Next.js dashboard / `app/` routes

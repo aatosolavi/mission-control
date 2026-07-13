@@ -1,3 +1,5 @@
+mod new_project;
+
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -13,18 +15,26 @@ use std::{
 use crossterm::{
     cursor::Show,
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-        MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+
+use new_project::{
+    auto_scroll_notes_to_end, build_init_command, clamp_notes_scroll, compose_init_prompt,
+    create_scaffold, delete_current_line, delete_last_char, delete_last_word, display_width,
+    ellipsize_end, ellipsize_front, env_flag_on, notes_viewport, pad_line, sliding_tail,
+    slugify_project_name, InitAgentKind, InitCommand, InitPrompt, ProjectTemplate, NAME_MAX_CHARS,
+    NOTES_MAX_CHARS, NOTES_VIEWPORT_ROWS,
 };
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -43,8 +53,37 @@ const APP_TAGLINE: &str = "go for launch";
 const ACCENT: Color = Color::Rgb(249, 115, 22);
 /// Text on filled accent chips (dark enough for contrast on orange).
 const ACCENT_ON: Color = Color::Rgb(23, 23, 23);
-/// Dirty branch / amber metadata.
+/// Dirty branch / amber metadata (fallback; prefer Theme.warn).
 const AMBER: Color = Color::Rgb(180, 120, 0);
+
+/// Braille spinner frames for background jobs (~100 ms each).
+const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+
+/// Idle tips — lowest-priority status-line content (preempted by real flashes).
+const TIPS: &[&str] = &[
+    ". resumes your last session",
+    "space favorites a workspace",
+    "1-9 picks an agent without leaving the list",
+    "n creates a project · s opens settings",
+    "? shows the full keymap",
+    "type to filter by name or path",
+    "MC_DEMO=1 t0 — screenshot-friendly fake workspaces",
+    "hover a missing agent chip to install",
+    "theme: Settings → UI theme (auto / light / dark)",
+    "shift-enter adds a newline in New Project notes",
+];
+
+const TIP_ROTATE: Duration = Duration::from_secs(30);
+/// Typewriter + color-ramp frames for tip entry (~40 ms each while reveal > 0).
+const TIP_REVEAL_FRAMES: u8 = 8;
+/// Soft sparkle while a tip is revealing.
+const TIP_SPARKLE: &[char] = &['·', '✦', '✧', '⋆', '✦', '·'];
+/// Inner chrome: title + chips + filter + tip/status + keys. `panel_rect` adds borders (2).
+const PANEL_CHROME: u16 = 5;
+/// Minimum outer panel height (was 12 — too squat on tall terminals).
+const MIN_PANEL_HEIGHT: u16 = 22;
+/// Floor for list content rows so the picker has a bit of air under short lists.
+const MIN_LIST_ROWS: u16 = 14;
 
 #[derive(Clone)]
 struct Repo {
@@ -278,6 +317,10 @@ struct Theme {
     border: Color,
     /// Unselected agent chip / list row.
     soft: Color,
+    /// Selected row full-width fill (one step off bg).
+    surface: Color,
+    /// Git dirty / ahead — never share hue with ACCENT.
+    warn: Color,
 }
 
 impl Theme {
@@ -290,6 +333,8 @@ impl Theme {
             key: Color::White,
             border: Color::DarkGray,
             soft: Color::Gray,
+            surface: Color::Rgb(38, 38, 38), // #262626
+            warn: AMBER,
         }
     }
 
@@ -303,6 +348,8 @@ impl Theme {
             key: Color::Rgb(24, 24, 27),
             border: Color::Rgb(161, 161, 170),
             soft: Color::Rgb(63, 63, 70), // zinc-700
+            surface: Color::Rgb(236, 236, 236), // #ececec
+            warn: Color::Rgb(161, 98, 7),       // darker amber on light
         }
     }
 
@@ -602,14 +649,119 @@ struct UiHitboxes {
     actions: Vec<(u16, u16, Action)>,
     list_top: u16,
     list_height: u16,
+    /// Per visible list row: `Some(visible_repo_index)` or `None` for separators / empty.
+    list_rows: Vec<Option<usize>>,
+}
+
+/// Preemptible tips on the row above the keymap (motion budget).
+struct TipTicker {
+    idx: usize,
+    rotated_at: Instant,
+    /// 0 = settled; 1..=TIP_REVEAL_FRAMES = typewriter + color ramp in progress.
+    reveal: u8,
+}
+
+impl Default for TipTicker {
+    fn default() -> Self {
+        Self {
+            idx: 0,
+            rotated_at: Instant::now(),
+            // Animate the first tip in on cold start.
+            reveal: TIP_REVEAL_FRAMES,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Picker,
     Settings,
-    /// Finder-style directory browser for workspace root.
+    /// Finder-style directory browser for workspace root or new-project parent.
     FolderPicker,
+    /// Create folder/repo + optional headless agent init.
+    NewProject,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FolderPickerPurpose {
+    WorkspaceRoot,
+    NewProjectParent,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TextDelete {
+    Char,
+    Word,
+    Line,
+}
+
+/// How long to wait after Esc for a Meta-prefixed key (Option+Backspace → Esc, Backspace).
+const ESC_META_WINDOW: Duration = Duration::from_millis(120);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NewProjectField {
+    Name,
+    Parent,
+    Template,
+    InitAgent,
+    Notes,
+    Create,
+}
+
+impl NewProjectField {
+    fn all() -> &'static [NewProjectField] {
+        &[
+            NewProjectField::Name,
+            NewProjectField::Parent,
+            NewProjectField::Template,
+            NewProjectField::InitAgent,
+            NewProjectField::Notes,
+            NewProjectField::Create,
+        ]
+    }
+
+    fn index(self) -> usize {
+        Self::all()
+            .iter()
+            .position(|f| *f == self)
+            .unwrap_or(0)
+    }
+
+    fn next(self) -> Self {
+        let all = Self::all();
+        all[(self.index() + 1) % all.len()]
+    }
+
+    fn prev(self) -> Self {
+        let all = Self::all();
+        all[(self.index() + all.len() - 1) % all.len()]
+    }
+}
+
+struct NewProjectForm {
+    name: String,
+    parent: PathBuf,
+    template: ProjectTemplate,
+    /// None = scaffold only (no agent available or user cycled to skip).
+    init_agent: Option<Action>,
+    notes: String,
+    /// First visible logical line of the notes 3-row viewport.
+    notes_scroll: u16,
+    field: NewProjectField,
+}
+
+impl NewProjectForm {
+    fn open(parent: PathBuf, default_agent: Option<Action>) -> Self {
+        Self {
+            name: String::new(),
+            parent,
+            template: ProjectTemplate::Agent,
+            init_agent: default_agent,
+            notes: String::new(),
+            notes_scroll: 0,
+            field: NewProjectField::Name,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -772,6 +924,7 @@ struct InstallUi {
     /// When set, bar lingers briefly then clears.
     finished_at: Option<Instant>,
     failed: bool,
+    started_at: Instant,
 }
 
 enum InstallEvent {
@@ -787,6 +940,21 @@ enum InstallEvent {
         action: Action,
         error: String,
     },
+}
+
+/// Background headless project init (stays in TUI; streams agent output into the bar).
+struct BgInitUi {
+    agent: Action,
+    project: String,
+    message: String,
+    finished_at: Option<Instant>,
+    failed: bool,
+    started_at: Instant,
+}
+
+enum BgInitEvent {
+    Line(String),
+    Done { ok: bool, summary: String },
 }
 
 struct App {
@@ -805,22 +973,59 @@ struct App {
     settings_selected: usize,
     /// Finder-style browser when choosing workspace root.
     folder: FolderBrowser,
+    folder_purpose: FolderPickerPurpose,
+    new_project: NewProjectForm,
     /// Active or finishing CLI install.
     install: Option<InstallUi>,
     install_rx: Option<Receiver<InstallEvent>>,
+    /// Background headless init after New Project create.
+    bg_init: Option<BgInitUi>,
+    bg_init_rx: Option<Receiver<BgInitEvent>>,
     /// Hover dwell before auto-install of a missing CLI.
     hover_missing: Option<(Action, Instant)>,
     /// Last drawn panel rect (for progress bar placement).
     panel_area: Rect,
+    /// Esc pressed while editing Name/Notes — many terminals send Option+Backspace
+    /// as Esc then Backspace (Meta prefix). Armed Esc waits briefly for the follow-up.
+    esc_meta_armed_at: Option<Instant>,
+    /// Async git badges (paint rows first; fill in as inspect_git finishes).
+    git_rx: Option<Receiver<(PathBuf, GitMeta)>>,
+    git_pending: usize,
+    /// When the current git fan-out started — drop channel after timeout so a stuck
+    /// mount cannot pin the event loop at 40 ms forever.
+    git_started_at: Option<Instant>,
+    /// `?` keymap overlay on the picker.
+    help_open: bool,
+    /// Idle tips in the status line (preempted by real flashes).
+    tips: TipTicker,
+    /// Status flash color-ramp frames remaining (0 = settled).
+    status_reveal: u8,
+}
+
+/// Git snapshot for one workspace row (filled asynchronously).
+#[derive(Clone, Debug, Default)]
+struct GitMeta {
+    branch: Option<String>,
+    dirty: bool,
+    ahead: u32,
 }
 
 impl App {
     fn new() -> Self {
         let state = LauncherState::load();
         let root = workspace_root(&state.settings);
-        let repos = discover_repos(&state);
+        let candidates = discover_candidates(&state);
+        let paths: Vec<PathBuf> = candidates.iter().map(|(p, _)| p.clone()).collect();
+        let repos = repos_from_candidates(candidates, &state);
+        let (git_rx, git_pending) = spawn_git_metadata(paths);
+        let git_started_at = if git_pending > 0 {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let visible_repos = (0..repos.len()).collect();
         let default_action = state.default_action();
+        let init_default = default_init_agent(&state.settings);
         let mut app = Self {
             state,
             repos,
@@ -834,19 +1039,128 @@ impl App {
             status_set_at: None,
             screen: Screen::Picker,
             settings_selected: 0,
-            folder: FolderBrowser::open(root),
+            folder: FolderBrowser::open(root.clone()),
+            folder_purpose: FolderPickerPurpose::WorkspaceRoot,
+            new_project: NewProjectForm::open(root, init_default),
             install: None,
             install_rx: None,
+            bg_init: None,
+            bg_init_rx: None,
             hover_missing: None,
             panel_area: Rect::default(),
+            esc_meta_armed_at: None,
+            git_rx: Some(git_rx),
+            git_pending,
+            git_started_at,
+            help_open: false,
+            tips: TipTicker::default(),
+            status_reveal: 0,
         };
         app.apply_agent_memory();
         app
     }
 
+    /// Rebuild workspace list from FS only, then fan out git inspect in the background.
+    fn refresh_repos(&mut self) {
+        let candidates = discover_candidates(&self.state);
+        let paths: Vec<PathBuf> = candidates.iter().map(|(p, _)| p.clone()).collect();
+        self.repos = repos_from_candidates(candidates, &self.state);
+        self.apply_filter();
+        let (rx, n) = spawn_git_metadata(paths);
+        self.git_rx = Some(rx);
+        self.git_pending = n;
+        self.git_started_at = if n > 0 { Some(Instant::now()) } else { None };
+    }
+
+    fn poll_git_meta(&mut self) {
+        // Stuck mounts hold a tx clone forever; abandon after 10 s so poll stays 250 ms.
+        const GIT_META_TIMEOUT: Duration = Duration::from_secs(10);
+        if let Some(started) = self.git_started_at {
+            if started.elapsed() >= GIT_META_TIMEOUT && self.git_pending > 0 {
+                self.git_rx = None;
+                self.git_pending = 0;
+                self.git_started_at = None;
+                return;
+            }
+        }
+
+        let Some(rx) = self.git_rx.as_ref() else {
+            return;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok((path, meta)) => {
+                    if let Some(repo) = self.repos.iter_mut().find(|r| r.path == path) {
+                        repo.git_branch = meta.branch;
+                        repo.git_dirty = meta.dirty;
+                        repo.git_ahead = meta.ahead;
+                    }
+                    self.git_pending = self.git_pending.saturating_sub(1);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.git_rx = None;
+                    self.git_pending = 0;
+                    self.git_started_at = None;
+                    break;
+                }
+            }
+        }
+        if self.git_pending == 0 {
+            self.git_rx = None;
+            self.git_started_at = None;
+        }
+    }
+
+    /// Apply word/line/char delete to Name or Notes (append-mode).
+    fn new_project_text_delete(&mut self, kind: TextDelete) {
+        if !matches!(
+            self.new_project.field,
+            NewProjectField::Name | NewProjectField::Notes
+        ) {
+            return;
+        }
+        let is_notes = self.new_project.field == NewProjectField::Notes;
+        let s = if is_notes {
+            &mut self.new_project.notes
+        } else {
+            &mut self.new_project.name
+        };
+        match kind {
+            TextDelete::Char => delete_last_char(s),
+            TextDelete::Word => delete_last_word(s),
+            TextDelete::Line => delete_current_line(s),
+        }
+        if is_notes {
+            self.new_project.notes_scroll =
+                clamp_notes_scroll(&self.new_project.notes, self.new_project.notes_scroll);
+        }
+    }
+
     fn open_folder_picker(&mut self) {
         let start = workspace_root(&self.state.settings);
         self.folder = FolderBrowser::open(start);
+        self.folder_purpose = FolderPickerPurpose::WorkspaceRoot;
+        self.screen = Screen::FolderPicker;
+        self.clear_status();
+    }
+
+    fn open_new_project(&mut self) {
+        let parent = workspace_root(&self.state.settings);
+        let init = default_init_agent(&self.state.settings);
+        self.new_project = NewProjectForm::open(parent, init);
+        self.screen = Screen::NewProject;
+        self.clear_status();
+    }
+
+    fn open_new_project_parent_picker(&mut self) {
+        let start = if self.new_project.parent.is_dir() {
+            self.new_project.parent.clone()
+        } else {
+            workspace_root(&self.state.settings)
+        };
+        self.folder = FolderBrowser::open(start);
+        self.folder_purpose = FolderPickerPurpose::NewProjectParent;
         self.screen = Screen::FolderPicker;
         self.clear_status();
     }
@@ -856,13 +1170,300 @@ impl App {
             self.set_status("not a directory");
             return;
         }
-        self.state.settings.workspace_root = Some(path.display().to_string());
-        self.state.save();
-        self.repos = discover_repos(&self.state);
-        self.apply_filter();
-        self.screen = Screen::Settings;
-        self.settings_selected = 4; // workspace root row
-        self.set_status(format!("workspace root: {}", display_path(&path)));
+        match self.folder_purpose {
+            FolderPickerPurpose::WorkspaceRoot => {
+                self.state.settings.workspace_root = Some(path.display().to_string());
+                self.state.save();
+                self.refresh_repos();
+                self.screen = Screen::Settings;
+                self.settings_selected = 4; // workspace root row
+                self.set_status(format!("workspace root: {}", display_path(&path)));
+            }
+            FolderPickerPurpose::NewProjectParent => {
+                self.new_project.parent = path.clone();
+                self.screen = Screen::NewProject;
+                self.new_project.field = NewProjectField::Parent;
+                self.set_status(format!("parent: {}", display_path(&path)));
+            }
+        }
+    }
+
+    fn cycle_new_project_init_agent(&mut self, delta: i32) {
+        let agents = eligible_init_agents();
+        // Cycle: none (scaffold only) + available headless-capable agents.
+        if agents.is_empty() {
+            self.new_project.init_agent = None;
+            self.set_status("no headless init agents available");
+            return;
+        }
+        let current = self.new_project.init_agent;
+        let mut idx = 0usize;
+        if let Some(cur) = current {
+            if let Some(i) = agents.iter().position(|a| *a == cur) {
+                idx = i + 1; // offset by None slot
+            }
+        }
+        let len = agents.len() + 1;
+        let next = ((idx as i32 + delta).rem_euclid(len as i32)) as usize;
+        self.new_project.init_agent = if next == 0 {
+            None
+        } else {
+            Some(agents[next - 1])
+        };
+        let label = self
+            .new_project
+            .init_agent
+            .map(|a| a.label().to_string())
+            .unwrap_or_else(|| "none (scaffold only)".into());
+        self.set_status(format!("init agent: {label}"));
+    }
+
+    fn select_repo_by_path(&mut self, path: &Path) {
+        self.filter.clear();
+        self.refresh_repos();
+        if let Some((vis_i, _)) = self
+            .visible_repos
+            .iter()
+            .enumerate()
+            .find(|(_, ri)| self.repos.get(**ri).map(|r| r.path == path).unwrap_or(false))
+        {
+            self.selected_visible = vis_i;
+            self.keep_selected_visible();
+            self.apply_agent_memory();
+        }
+    }
+
+    /// Scaffold project; optionally start background headless init (stay in TUI).
+    fn try_create_project(&mut self) -> Result<(), String> {
+        let slug = slugify_project_name(&self.new_project.name)?;
+        let target = create_scaffold(
+            &self.new_project.parent,
+            &slug,
+            self.new_project.template,
+            &self.new_project.notes,
+            &display_path,
+        )?;
+        // Ensure nested / scaffold-only parents still appear via recents.
+        record_recent_workspace(&target);
+        self.select_repo_by_path(&target);
+        self.screen = Screen::Picker;
+
+        let notes = self.new_project.notes.clone();
+        let template = self.new_project.template;
+        let init_agent = self.new_project.init_agent;
+
+        let Some(action) = init_agent else {
+            self.set_status(format!("✦ created {} · scaffold only", slug));
+            return Ok(());
+        };
+
+        if !action.is_available() {
+            self.set_status(format!(
+                "✦ created {} · {} not found — run init manually",
+                slug,
+                action.label()
+            ));
+            return Ok(());
+        }
+
+        let kind = action_to_init_kind(action)
+            .ok_or_else(|| "shell cannot run headless init".to_string())?;
+        let (program, prefix) = resolve_program(action)
+            .ok_or_else(|| format!("no command for {}", action.label()))?;
+        let prompt = compose_init_prompt(&InitPrompt {
+            project_name: slug.clone(),
+            template,
+            notes,
+        });
+        let cmd = build_init_command(kind, program, prefix, &target, &prompt);
+
+        // Remember last launch / agent for this workspace.
+        self.prepare_launch(&Launch {
+            action,
+            cwd: target.clone(),
+        });
+
+        self.start_background_init(action, cmd, display_path(&target));
+        Ok(())
+    }
+
+    fn bg_init_busy(&self) -> bool {
+        matches!(
+            &self.bg_init,
+            Some(BgInitUi {
+                finished_at: None,
+                ..
+            })
+        )
+    }
+
+    /// Spawn headless init in a background thread; stream lines into the TUI bar.
+    fn start_background_init(&mut self, action: Action, cmd: InitCommand, project: String) {
+        if self.bg_init_busy() {
+            self.set_status("init already running");
+            return;
+        }
+
+        if env_flag_on("MC_INIT_DRY_RUN") {
+            self.set_status(format!(
+                "created {project} · dry-run: {} {:?}",
+                cmd.program, cmd.args
+            ));
+            return;
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.bg_init_rx = Some(rx);
+        self.bg_init = Some(BgInitUi {
+            agent: action,
+            project: project.clone(),
+            message: format!("starting {}…", action.label().to_ascii_lowercase()),
+            finished_at: None,
+            failed: false,
+            started_at: Instant::now(),
+        });
+        self.set_status(format!(
+            "✦ created {project} · {} init…",
+            action.label()
+        ));
+
+        let label = action.label().to_string();
+        thread::spawn(move || {
+            let mut child = match Command::new(&cmd.program)
+                .args(&cmd.args)
+                .current_dir(&cmd.cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(BgInitEvent::Done {
+                        ok: false,
+                        summary: format!("failed to start {label}: {e}"),
+                    });
+                    return;
+                }
+            };
+
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            let tx_out = tx.clone();
+            let tx_err = tx.clone();
+            let out_h = thread::spawn(move || {
+                if let Some(out) = stdout {
+                    for line in BufReader::new(out).lines().flatten() {
+                        if tx_out.send(BgInitEvent::Line(line)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+            let err_h = thread::spawn(move || {
+                if let Some(err) = stderr {
+                    for line in BufReader::new(err).lines().flatten() {
+                        if tx_err.send(BgInitEvent::Line(line)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+            let _ = out_h.join();
+            let _ = err_h.join();
+
+            match child.wait() {
+                Ok(status) if status.success() => {
+                    let _ = tx.send(BgInitEvent::Done {
+                        ok: true,
+                        summary: format!("{label} init finished"),
+                    });
+                }
+                Ok(status) => {
+                    let _ = tx.send(BgInitEvent::Done {
+                        ok: false,
+                        summary: format!("{label} init exited {status}"),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(BgInitEvent::Done {
+                        ok: false,
+                        summary: format!("{label} init wait failed: {e}"),
+                    });
+                }
+            }
+        });
+    }
+
+    fn poll_bg_init(&mut self) {
+        let Some(rx) = self.bg_init_rx.as_ref() else {
+            if let Some(ui) = &self.bg_init {
+                if let Some(done_at) = ui.finished_at {
+                    // Linger longer than install — user should read the result.
+                    if done_at.elapsed() >= Duration::from_secs(6) {
+                        self.bg_init = None;
+                    }
+                }
+            }
+            return;
+        };
+
+        loop {
+            match rx.try_recv() {
+                Ok(BgInitEvent::Line(line)) => {
+                    let msg = truncate_status_line(&line, 72);
+                    if let Some(ui) = &mut self.bg_init {
+                        ui.message = msg;
+                    }
+                }
+                Ok(BgInitEvent::Done { ok, summary }) => {
+                    let project = self
+                        .bg_init
+                        .as_ref()
+                        .map(|u| u.project.clone())
+                        .unwrap_or_default();
+                    let agent = self
+                        .bg_init
+                        .as_ref()
+                        .map(|u| u.agent)
+                        .unwrap_or(Action::Shell);
+                    let msg = truncate_status_line(&summary, 72);
+                    let started_at = self
+                        .bg_init
+                        .as_ref()
+                        .map(|u| u.started_at)
+                        .unwrap_or_else(Instant::now);
+                    self.bg_init = Some(BgInitUi {
+                        agent,
+                        project: project.clone(),
+                        message: msg.clone(),
+                        finished_at: Some(Instant::now()),
+                        failed: !ok,
+                        started_at,
+                    });
+                    self.bg_init_rx = None;
+                    if ok {
+                        self.set_status(format!("{project} · {msg}"));
+                    } else {
+                        self.set_status(format!("{project} · {msg}"));
+                    }
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.bg_init_rx = None;
+                    break;
+                }
+            }
+        }
+
+        if let Some(ui) = &self.bg_init {
+            if let Some(done_at) = ui.finished_at {
+                if done_at.elapsed() >= Duration::from_secs(6) {
+                    self.bg_init = None;
+                }
+            }
+        }
     }
 
     fn install_busy(&self) -> bool {
@@ -899,6 +1500,7 @@ impl App {
             message: format!("installing {}…", action.label().to_ascii_lowercase()),
             finished_at: None,
             failed: false,
+            started_at: Instant::now(),
         });
         self.hover_missing = None;
 
@@ -1008,21 +1610,33 @@ impl App {
                     fraction,
                     message,
                 }) => {
+                    let started_at = self
+                        .install
+                        .as_ref()
+                        .map(|u| u.started_at)
+                        .unwrap_or_else(Instant::now);
                     self.install = Some(InstallUi {
                         action,
                         fraction,
                         message,
                         finished_at: None,
                         failed: false,
+                        started_at,
                     });
                 }
                 Ok(InstallEvent::Done { action }) => {
+                    let started_at = self
+                        .install
+                        .as_ref()
+                        .map(|u| u.started_at)
+                        .unwrap_or_else(Instant::now);
                     self.install = Some(InstallUi {
                         action,
                         fraction: 1.0,
                         message: format!("{} ready", action.label().to_ascii_lowercase()),
                         finished_at: Some(Instant::now()),
                         failed: false,
+                        started_at,
                     });
                     self.install_rx = None;
                     // Prefer the newly installed agent if still on that chip.
@@ -1032,6 +1646,11 @@ impl App {
                     break;
                 }
                 Ok(InstallEvent::Failed { action, error }) => {
+                    let started_at = self
+                        .install
+                        .as_ref()
+                        .map(|u| u.started_at)
+                        .unwrap_or_else(Instant::now);
                     self.install = Some(InstallUi {
                         action,
                         fraction: 1.0,
@@ -1042,6 +1661,7 @@ impl App {
                         ),
                         finished_at: Some(Instant::now()),
                         failed: true,
+                        started_at,
                     });
                     self.install_rx = None;
                     break;
@@ -1113,21 +1733,105 @@ impl App {
     fn set_status(&mut self, message: impl Into<String>) {
         self.status = Some(message.into());
         self.status_set_at = Some(Instant::now());
+        // 3-frame fake fade-in (dim→muted→text) at 40 ms poll.
+        self.status_reveal = 3;
     }
 
     fn clear_status(&mut self) {
         self.status = None;
         self.status_set_at = None;
+        self.status_reveal = 0;
     }
 
     /// Drop footer flashes after a few seconds so they don't stick forever.
     fn tick_status(&mut self) {
         const STATUS_TTL: Duration = Duration::from_millis(2500);
+        if self.status_reveal > 0 {
+            self.status_reveal -= 1;
+        }
         if let Some(set_at) = self.status_set_at {
             if set_at.elapsed() >= STATUS_TTL {
                 self.clear_status();
             }
         }
+    }
+
+    /// Tips: rotate every ~30 s when free; pause while a status flash or job is active.
+    fn tick_tips(&mut self) {
+        if self.status.is_some() || self.job_busy() {
+            return;
+        }
+        if self.tips.reveal > 0 {
+            self.tips.reveal -= 1;
+            return;
+        }
+        if self.tips.rotated_at.elapsed() >= TIP_ROTATE {
+            self.tips.idx = (self.tips.idx + 1) % TIPS.len();
+            self.tips.rotated_at = Instant::now();
+            self.tips.reveal = TIP_REVEAL_FRAMES;
+        }
+    }
+
+    fn job_busy(&self) -> bool {
+        self.install.is_some() || self.bg_init.is_some()
+    }
+
+    /// Color ramp into ACCENT (dim → muted → orange) while revealing.
+    fn tip_style(&self, t: Theme) -> Style {
+        match self.tips.reveal {
+            6..=8 => Style::default().fg(t.dim),
+            3..=5 => Style::default().fg(t.muted),
+            1..=2 => Style::default().fg(ACCENT).add_modifier(Modifier::DIM),
+            _ => Style::default().fg(ACCENT),
+        }
+    }
+
+    fn tip_sparkle(&self) -> char {
+        if self.tips.reveal == 0 {
+            return '✦';
+        }
+        let i = (self.tips.rotated_at.elapsed().as_millis() as usize / 40) % TIP_SPARKLE.len();
+        TIP_SPARKLE[i]
+    }
+
+    /// Progressive reveal of tip text (typewriter) during the entrance ramp.
+    fn tip_visible_text(&self, tip: &str) -> String {
+        if self.tips.reveal == 0 {
+            return tip.to_string();
+        }
+        let chars: Vec<char> = tip.chars().collect();
+        if chars.is_empty() {
+            return String::new();
+        }
+        // reveal 8 → ~12% shown … reveal 1 → ~88% shown
+        let progress = 1.0 - (self.tips.reveal as f32 / f32::from(TIP_REVEAL_FRAMES));
+        let n = ((chars.len() as f32) * progress).ceil() as usize;
+        chars.into_iter().take(n.clamp(1, tip.chars().count())).collect()
+    }
+
+    fn status_style(&self, t: Theme) -> Style {
+        match self.status_reveal {
+            3 => Style::default().fg(t.dim),
+            2 => Style::default().fg(t.muted),
+            1 | 0 => Style::default().fg(ACCENT),
+            _ => Style::default().fg(ACCENT),
+        }
+    }
+
+    /// One-frame brand paint before exec (zero added latency).
+    fn paint_liftoff(&mut self, launch: &Launch) {
+        let name = launch
+            .cwd
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| display_path(&launch.cwd));
+        self.status = Some(format!(
+            "T-0 · liftoff → {} @ {}",
+            launch.action.label(),
+            name
+        ));
+        self.status_set_at = Some(Instant::now());
+        self.status_reveal = 0; // full strength for the last frame
     }
 
     fn selected_repo(&self) -> Option<&Repo> {
@@ -1336,8 +2040,7 @@ impl App {
     }
 
     fn rebuild_repos_preserving_selection(&mut self, selected_path: &Path) {
-        self.repos = discover_repos(&self.state);
-        self.apply_filter();
+        self.refresh_repos();
         if let Some(visible_index) = self
             .visible_repos
             .iter()
@@ -1397,6 +2100,8 @@ enum SideAction {
 }
 
 fn main() -> io::Result<()> {
+    // P3: build app (starts async git) before splash so badges fill during splash.
+    let mut app = App::new();
     let mut first_ui = true;
 
     loop {
@@ -1411,11 +2116,11 @@ fn main() -> io::Result<()> {
         if first_ui {
             first_ui = false;
             if splash_enabled() {
-                let _ = run_splash(&mut terminal);
+                let _ = run_splash(&mut terminal, app.theme());
             }
         }
 
-        let launch = run_app(&mut terminal);
+        let launch = run_app(&mut terminal, &mut app);
 
         disable_raw_mode()?;
         execute!(
@@ -1559,11 +2264,12 @@ impl Splash {
 
 fn run_splash(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    theme: Theme,
 ) -> io::Result<()> {
     let splash = Splash::new();
 
     loop {
-        terminal.draw(|frame| draw_splash(frame, &splash))?;
+        terminal.draw(|frame| draw_splash(frame, &splash, theme))?;
 
         if splash.done() {
             return Ok(());
@@ -1582,12 +2288,20 @@ fn run_splash(
     }
 }
 
-fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
-    let area = centered_rect(frame.area());
+fn draw_splash(frame: &mut Frame<'_>, splash: &Splash, t: Theme) {
+    // Same full-terminal paint as the picker so light/dark match (no bare ANSI default).
+    frame.render_widget(
+        Block::default().style(Style::default().bg(t.bg).fg(t.text)),
+        frame.area(),
+    );
+
+    // Match main panel minimum silhouette (taller + themed).
+    let area = panel_rect(frame.area(), PANEL_CHROME.saturating_add(MIN_LIST_ROWS));
     let block = Block::default()
         .title(format!(" {APP_NAME} "))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(t.border))
+        .style(Style::default().bg(t.bg).fg(t.text));
     frame.render_widget(block, area);
 
     let inner = inset(area, 2, 1);
@@ -1612,6 +2326,7 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
             APP_NAME,
             Style::default()
                 .fg(ACCENT)
+                .bg(t.bg)
                 .add_modifier(Modifier::BOLD),
         )))
         .alignment(ratatui::layout::Alignment::Center);
@@ -1621,7 +2336,7 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
     if elapsed >= SPLASH_TAGLINE_MS {
         let tagline = Paragraph::new(Line::from(Span::styled(
             APP_TAGLINE,
-            Style::default().fg(Color::Gray),
+            Style::default().fg(t.muted).bg(t.bg),
         )))
         .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(tagline, chunks[2]);
@@ -1636,7 +2351,7 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
         let rule = "─".repeat(len);
         let rule_widget = Paragraph::new(Line::from(Span::styled(
             rule,
-            Style::default().fg(ACCENT),
+            Style::default().fg(ACCENT).bg(t.bg),
         )))
         .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(rule_widget, chunks[3]);
@@ -1644,41 +2359,100 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
 
     let skip = Paragraph::new(Line::from(Span::styled(
         "any key skip",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(t.dim).bg(t.bg),
     )))
     .alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(skip, chunks[6]);
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<Option<Launch>> {
-    let mut app = App::new();
+fn draw_app_frame(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+    terminal.draw(|frame| match app.screen {
+        Screen::Picker => {
+            draw(frame, app);
+            if app.help_open {
+                draw_help_overlay(frame, app);
+            }
+        }
+        Screen::Settings => draw_settings(frame, app),
+        Screen::FolderPicker => draw_folder_picker(frame, app),
+        // Popup over the picker — not a separate full-screen UI.
+        Screen::NewProject => {
+            draw(frame, app);
+            draw_new_project_popup(frame, app);
+        }
+    })?;
+    Ok(())
+}
+
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> io::Result<Option<Launch>> {
+    // Re-discover after returning from an agent (App lives across run_app entries).
+    // Async git fan-out — paint is not blocked. Keep selection when the path still exists.
+    if let Some(path) = app.selected_repo().map(|r| r.path.clone()) {
+        app.rebuild_repos_preserving_selection(&path);
+    } else {
+        app.refresh_repos();
+    }
+    app.help_open = false;
+
+    // Initial paint before first input (async git badges fill in on later frames).
+    draw_app_frame(terminal, app)?;
 
     loop {
         app.tick_status();
+        app.tick_tips();
         app.poll_install();
+        app.poll_bg_init();
+        app.poll_git_meta();
         app.tick_hover_install();
-        terminal.draw(|frame| match app.screen {
-            Screen::Picker => draw(frame, &mut app),
-            Screen::Settings => draw_settings(frame, &mut app),
-            Screen::FolderPicker => draw_folder_picker(frame, &mut app),
-        })?;
 
-        // Poll shorter while a status flash or install bar is active.
-        let poll_ms = if app.status.is_some() || app.install.is_some() {
+        // Faster poll while bars/status/reveal/git meta/esc-meta are active.
+        // Idle tips use 250 ms — never 40 ms for 30 s decoration.
+        let poll_ms = if app.status.is_some()
+            || app.status_reveal > 0
+            || app.tips.reveal > 0
+            || app.install.is_some()
+            || app.bg_init.is_some()
+            || app.git_pending > 0
+            || app.esc_meta_armed_at.is_some()
+        {
             40
         } else {
             250
         };
-        if !event::poll(Duration::from_millis(poll_ms))? {
-            continue;
-        }
 
-        match event::read()? {
+        // P1: drain all pending input, then draw once (paste / mouse motion).
+        // Poll-before-read (after the first event) so `continue` in match arms is safe
+        // and does not re-block on `event::read` skipping the draw.
+        if event::poll(Duration::from_millis(poll_ms))? {
+            let mut first = true;
+            loop {
+                if !first && !event::poll(Duration::ZERO)? {
+                    break;
+                }
+                first = false;
+                match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
+                // Help overlay intercepts keys on the picker.
+                if app.help_open && app.screen == Screen::Picker {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('?') => {
+                            app.help_open = false;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 if app.screen == Screen::FolderPicker {
                     match key.code {
                         KeyCode::Esc => {
-                            app.screen = Screen::Settings;
+                            app.screen = match app.folder_purpose {
+                                FolderPickerPurpose::WorkspaceRoot => Screen::Settings,
+                                FolderPickerPurpose::NewProjectParent => Screen::NewProject,
+                            };
                             app.clear_status();
                         }
                         KeyCode::Down | KeyCode::Char('j') => app.folder.select_next(),
@@ -1740,6 +2514,271 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     continue;
                 }
 
+                if app.screen == Screen::NewProject {
+                    let mods = key.modifiers;
+                    let ctrl = mods.contains(KeyModifiers::CONTROL);
+                    let alt = mods.contains(KeyModifiers::ALT);
+                    let super_key = mods.contains(KeyModifiers::SUPER);
+                    // Char insert only for plain typing (or Shift for uppercase) —
+                    // Ctrl/Alt/Super chords must never type into Name/Notes.
+                    let plain_or_shift =
+                        mods.is_empty() || mods == KeyModifiers::SHIFT;
+
+                    // Option+Backspace often arrives as Esc then Backspace (Meta prefix).
+                    if let Some(armed) = app.esc_meta_armed_at.take() {
+                        if armed.elapsed() < ESC_META_WINDOW {
+                            match key.code {
+                                KeyCode::Backspace | KeyCode::Delete => {
+                                    app.new_project_text_delete(TextDelete::Word);
+                                    continue;
+                                }
+                                KeyCode::Char(c) if c == '\u{7f}' || c == '\u{08}' => {
+                                    app.new_project_text_delete(TextDelete::Word);
+                                    continue;
+                                }
+                                KeyCode::Esc => {
+                                    app.screen = Screen::Picker;
+                                    app.clear_status();
+                                    continue;
+                                }
+                                _ => {
+                                    // Esc then unrelated key → close (Esc alone intent).
+                                    app.screen = Screen::Picker;
+                                    app.clear_status();
+                                    continue;
+                                }
+                            }
+                        }
+                        // Timed out before this key: Esc alone closes, drop this key.
+                        app.screen = Screen::Picker;
+                        app.clear_status();
+                        continue;
+                    }
+
+                    // Ctrl+Enter always creates from any field.
+                    if matches!(key.code, KeyCode::Enter) && ctrl {
+                        if let Err(err) = app.try_create_project() {
+                            app.set_status(err);
+                        }
+                        continue;
+                    }
+
+                    // Ctrl+U / Ctrl+W / Ctrl+Backspace on Name/Notes.
+                    if ctrl {
+                        if let KeyCode::Char(c) = key.code {
+                            let lower = c.to_ascii_lowercase();
+                            if matches!(
+                                app.new_project.field,
+                                NewProjectField::Name | NewProjectField::Notes
+                            ) && (lower == 'u' || lower == 'w')
+                            {
+                                if lower == 'u' {
+                                    app.new_project_text_delete(TextDelete::Line);
+                                } else {
+                                    app.new_project_text_delete(TextDelete::Word);
+                                }
+                                continue;
+                            }
+                        }
+                        if matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
+                            && matches!(
+                                app.new_project.field,
+                                NewProjectField::Name | NewProjectField::Notes
+                            )
+                        {
+                            app.new_project_text_delete(TextDelete::Word);
+                            continue;
+                        }
+                    }
+
+                    match key.code {
+                        KeyCode::Esc => {
+                            // While typing, delay Esc: follow-up may be Meta-Backspace.
+                            if matches!(
+                                app.new_project.field,
+                                NewProjectField::Name | NewProjectField::Notes
+                            ) && mods.is_empty()
+                            {
+                                app.esc_meta_armed_at = Some(Instant::now());
+                            } else {
+                                app.screen = Screen::Picker;
+                                app.clear_status();
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.new_project.field == NewProjectField::Notes {
+                                let n = new_project::notes_lines(&app.new_project.notes).len();
+                                let max_scroll =
+                                    n.saturating_sub(NOTES_VIEWPORT_ROWS as usize) as u16;
+                                if app.new_project.notes_scroll < max_scroll {
+                                    app.new_project.notes_scroll += 1;
+                                } else {
+                                    app.new_project.field = app.new_project.field.next();
+                                }
+                            } else {
+                                app.new_project.field = app.new_project.field.next();
+                            }
+                        }
+                        KeyCode::Up => {
+                            if app.new_project.field == NewProjectField::Notes {
+                                // Shift+Up always leaves Notes (no scroll gauntlet).
+                                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                    app.new_project.field = app.new_project.field.prev();
+                                } else if app.new_project.notes_scroll > 0 {
+                                    app.new_project.notes_scroll -= 1;
+                                } else {
+                                    app.new_project.field = app.new_project.field.prev();
+                                }
+                            } else {
+                                app.new_project.field = app.new_project.field.prev();
+                            }
+                        }
+                        KeyCode::Char('j')
+                            if plain_or_shift
+                                && !matches!(
+                                    app.new_project.field,
+                                    NewProjectField::Name | NewProjectField::Notes
+                                ) =>
+                        {
+                            app.new_project.field = app.new_project.field.next();
+                        }
+                        KeyCode::Char('k')
+                            if plain_or_shift
+                                && !matches!(
+                                    app.new_project.field,
+                                    NewProjectField::Name | NewProjectField::Notes
+                                ) =>
+                        {
+                            app.new_project.field = app.new_project.field.prev();
+                        }
+                        KeyCode::Tab => {
+                            app.new_project.field = app.new_project.field.next();
+                        }
+                        KeyCode::BackTab => {
+                            app.new_project.field = app.new_project.field.prev();
+                        }
+                        KeyCode::Left => match app.new_project.field {
+                            NewProjectField::Template => {
+                                app.new_project.template = app.new_project.template.cycle();
+                            }
+                            NewProjectField::InitAgent => {
+                                app.cycle_new_project_init_agent(-1);
+                            }
+                            _ => {}
+                        },
+                        KeyCode::Right => match app.new_project.field {
+                            NewProjectField::Template => {
+                                app.new_project.template = app.new_project.template.cycle();
+                            }
+                            NewProjectField::InitAgent => {
+                                app.cycle_new_project_init_agent(1);
+                            }
+                            NewProjectField::Parent => {
+                                app.open_new_project_parent_picker();
+                            }
+                            // Create only via Enter / Space / Ctrl+Enter — not Right.
+                            _ => {}
+                        },
+                        KeyCode::Char(' ') if plain_or_shift => match app.new_project.field {
+                            NewProjectField::Name => {
+                                if app.new_project.name.chars().count() < NAME_MAX_CHARS {
+                                    app.new_project.name.push(' ');
+                                }
+                            }
+                            NewProjectField::Notes => {
+                                if app.new_project.notes.chars().count() < NOTES_MAX_CHARS {
+                                    app.new_project.notes.push(' ');
+                                    app.new_project.notes_scroll =
+                                        auto_scroll_notes_to_end(&app.new_project.notes);
+                                }
+                            }
+                            NewProjectField::Template => {
+                                app.new_project.template = app.new_project.template.cycle();
+                            }
+                            NewProjectField::InitAgent => {
+                                app.cycle_new_project_init_agent(1);
+                            }
+                            NewProjectField::Parent => {
+                                app.open_new_project_parent_picker();
+                            }
+                            NewProjectField::Create => {
+                                if let Err(err) = app.try_create_project() {
+                                    app.set_status(err);
+                                }
+                            }
+                        },
+                        KeyCode::Enter => {
+                            // Shift+Enter in Notes = newline (chat-style). Plain Enter advances
+                            // or creates from Create. Ctrl+Enter still creates from any field.
+                            let shift = mods.contains(KeyModifiers::SHIFT);
+                            if shift
+                                && app.new_project.field == NewProjectField::Notes
+                                && app.new_project.notes.chars().count() < NOTES_MAX_CHARS
+                            {
+                                app.new_project.notes.push('\n');
+                                app.new_project.notes_scroll =
+                                    auto_scroll_notes_to_end(&app.new_project.notes);
+                                continue;
+                            }
+                            match app.new_project.field {
+                                NewProjectField::Parent => {
+                                    app.open_new_project_parent_picker();
+                                }
+                                NewProjectField::Template => {
+                                    app.new_project.template = app.new_project.template.cycle();
+                                }
+                                NewProjectField::InitAgent => {
+                                    app.cycle_new_project_init_agent(1);
+                                }
+                                NewProjectField::Name | NewProjectField::Notes => {
+                                    // Enter advances to next field.
+                                    app.new_project.field = app.new_project.field.next();
+                                }
+                                NewProjectField::Create => {
+                                    if let Err(err) = app.try_create_project() {
+                                        app.set_status(err);
+                                    }
+                                }
+                            }
+                        },
+                        KeyCode::Backspace | KeyCode::Delete => {
+                            if matches!(
+                                app.new_project.field,
+                                NewProjectField::Name | NewProjectField::Notes
+                            ) {
+                                // Alt/Option or Super+Backspace → word / line.
+                                // Plain Backspace → one char.
+                                if super_key {
+                                    app.new_project_text_delete(TextDelete::Line);
+                                } else if alt {
+                                    app.new_project_text_delete(TextDelete::Word);
+                                } else {
+                                    app.new_project_text_delete(TextDelete::Char);
+                                }
+                            }
+                        }
+                        KeyCode::Char(c) if !c.is_control() && plain_or_shift => {
+                            match app.new_project.field {
+                                NewProjectField::Name => {
+                                    if app.new_project.name.chars().count() < NAME_MAX_CHARS {
+                                        app.new_project.name.push(c);
+                                    }
+                                }
+                                NewProjectField::Notes => {
+                                    if app.new_project.notes.chars().count() < NOTES_MAX_CHARS {
+                                        app.new_project.notes.push(c);
+                                        app.new_project.notes_scroll =
+                                            auto_scroll_notes_to_end(&app.new_project.notes);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match key.code {
                 KeyCode::Esc => {
                     if app.filter.is_empty() {
@@ -1756,6 +2795,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     }
                     if let Some(launch) = app.selected_launch() {
                         app.prepare_launch(&launch);
+                        app.paint_liftoff(&launch);
+                        draw_app_frame(terminal, app)?;
                         return Ok(Some(launch));
                     }
                 }
@@ -1779,14 +2820,23 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     app.clear_status();
                     if let Some(launch) = app.state.continue_last() {
                         app.prepare_launch(&launch);
+                        app.paint_liftoff(&launch);
+                        draw_app_frame(terminal, app)?;
                         return Ok(Some(launch));
                     }
                     app.set_status("no last session — open something with enter first");
                 }
+                KeyCode::Char('?') if app.filter.is_empty() => {
+                    app.help_open = true;
+                }
                 KeyCode::Char('s') | KeyCode::Char('S') if app.filter.is_empty() => {
+                    app.help_open = false;
                     app.screen = Screen::Settings;
                     app.settings_selected = 0;
                     app.clear_status();
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') if app.filter.is_empty() => {
+                    app.open_new_project();
                 }
                 KeyCode::Char('e') | KeyCode::Char('E') if app.filter.is_empty() => {
                     app.run_side_action(SideAction::Editor);
@@ -1807,6 +2857,38 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 _ => {}
             }
             }
+            Event::Mouse(mouse) if app.screen == Screen::NewProject => match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    app.new_project.field = app.new_project.field.next();
+                }
+                MouseEventKind::ScrollUp => {
+                    app.new_project.field = app.new_project.field.prev();
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    // Hit geometry matches draw_new_project_popup layout (not one-row-per-field).
+                    let panel = app.panel_area;
+                    if panel.width > 0
+                        && panel.height > 0
+                        && mouse.column >= panel.x
+                        && mouse.column < panel.x.saturating_add(panel.width)
+                        && mouse.row >= panel.y
+                        && mouse.row < panel.y.saturating_add(panel.height)
+                    {
+                        // Match draw_new_project_popup: inset(2,0) then +1 top / -2 height for border.
+                        let padded = inset(panel, 2, 0);
+                        let inner = Rect {
+                            x: padded.x,
+                            y: padded.y.saturating_add(1),
+                            width: padded.width,
+                            height: padded.height.saturating_sub(2),
+                        };
+                        if let Some(field) = hit_test_new_project_field(inner, mouse.row) {
+                            app.new_project.field = field;
+                        }
+                    }
+                }
+                _ => {}
+            },
             Event::Mouse(mouse) if app.screen == Screen::FolderPicker => match mouse.kind {
                 MouseEventKind::ScrollDown => app.folder.select_next(),
                 MouseEventKind::ScrollUp => app.folder.select_prev(),
@@ -1821,6 +2903,40 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 app.folder.enter_selected();
                             } else {
                                 app.folder.selected = idx;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Event::Mouse(mouse) if app.screen == Screen::Settings => match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    app.settings_selected = (app.settings_selected + 1)
+                        .min(App::settings_item_count().saturating_sub(1));
+                }
+                MouseEventKind::ScrollUp => {
+                    app.settings_selected = app.settings_selected.saturating_sub(1);
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    // Match draw_settings: panel_rect → inset(2,1) → help @ inner.y,
+                    // 6 option rows start at inner.y + 1.
+                    let panel = app.panel_area;
+                    if panel.width > 0 && panel.height > 0 {
+                        let inner = inset(panel, 2, 1);
+                        let options_top = inner.y.saturating_add(1);
+                        if mouse.row >= options_top
+                            && mouse.column >= inner.x
+                            && mouse.column < inner.x.saturating_add(inner.width)
+                        {
+                            let row = usize::from(mouse.row - options_top);
+                            let n = App::settings_item_count();
+                            if row < n {
+                                if row == app.settings_selected {
+                                    // Second click = Enter / →
+                                    app.nudge_settings_item(1);
+                                } else {
+                                    app.settings_selected = row;
+                                }
                             }
                         }
                     }
@@ -1854,9 +2970,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
                     let list_bottom = app.hitboxes.list_top + app.hitboxes.list_height;
                     if mouse.row >= app.hitboxes.list_top && mouse.row < list_bottom {
-                        let clicked_visible =
-                            app.offset + usize::from(mouse.row - app.hitboxes.list_top);
-                        if clicked_visible < app.visible_repos.len() {
+                        let row = usize::from(mouse.row - app.hitboxes.list_top);
+                        let clicked = app
+                            .hitboxes
+                            .list_rows
+                            .get(row)
+                            .copied()
+                            .flatten();
+                        if let Some(clicked_visible) = clicked {
                             if clicked_visible == app.selected_visible {
                                 if app.selected_action != Action::Shell
                                     && !app.selected_action.is_available()
@@ -1864,6 +2985,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                     app.start_install(app.selected_action);
                                 } else if let Some(launch) = app.selected_launch() {
                                     app.prepare_launch(&launch);
+                                    app.paint_liftoff(&launch);
+                                    draw_app_frame(terminal, app)?;
                                     return Ok(Some(launch));
                                 }
                             }
@@ -1881,7 +3004,22 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 }
             }
             _ => {}
+                }
+            }
+        } else {
+            // Idle tick: Esc alone (no follow-up key) closes the New Project popup.
+            if app.screen == Screen::NewProject {
+                if let Some(armed) = app.esc_meta_armed_at {
+                    if armed.elapsed() >= ESC_META_WINDOW {
+                        app.esc_meta_armed_at = None;
+                        app.screen = Screen::Picker;
+                        app.clear_status();
+                    }
+                }
+            }
         }
+
+        draw_app_frame(terminal, app)?;
     }
 }
 
@@ -1893,7 +3031,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         frame.area(),
     );
 
-    let area = centered_rect(frame.area());
+    let area = picker_panel_rect(frame.area(), app);
     app.panel_area = area;
     let block = Block::default()
         .title(format!(" {APP_NAME} "))
@@ -1906,11 +3044,12 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(1), // title
+            Constraint::Length(1), // chips
+            Constraint::Length(1), // filter
+            Constraint::Min(2),    // list
+            Constraint::Length(1), // tip / status (live, colored)
+            Constraint::Length(1), // keys (always visible)
         ])
         .split(inner);
 
@@ -1930,46 +3069,90 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     draw_filter(frame, app, chunks[2], t);
     draw_repos(frame, app, chunks[3], t);
 
-    let footer_second = if let Some(status) = &app.status {
-        Line::from(Span::styled(status.clone(), Style::default().fg(ACCENT)))
-    } else {
+    // Live row above keys: status flash wins, else animated tip (New Project keeps flashes in modal).
+    let tip_w = chunks[4].width as usize;
+    let tip_line = if app.screen == Screen::NewProject {
         Line::from(Span::styled(
-            "e editor · f finder · c copy · g github · hover dim app to install",
+            pad_line("", tip_w),
             Style::default().fg(t.dim),
         ))
+    } else if let Some(status) = &app.status {
+        Line::from(Span::styled(
+            pad_line(status, tip_w),
+            app.status_style(t),
+        ))
+    } else {
+        let tip = TIPS[app.tips.idx % TIPS.len()];
+        let body = app.tip_visible_text(tip);
+        let spark = app.tip_sparkle();
+        let styled = app.tip_style(t);
+        let raw = format!("{spark} {body}");
+        // Soft caret while typewriting.
+        let with_caret = if app.tips.reveal > 0 {
+            format!("{raw}▌")
+        } else {
+            raw
+        };
+        Line::from(Span::styled(pad_line(&with_caret, tip_w), styled))
     };
-    let footer = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("enter", Style::default().fg(t.key)),
-            Span::styled(" open  ", Style::default().fg(t.dim)),
-            Span::styled(".", Style::default().fg(t.key)),
-            Span::styled(" resume  ", Style::default().fg(t.dim)),
-            Span::styled("space", Style::default().fg(t.key)),
-            Span::styled(" fav  ", Style::default().fg(t.dim)),
-            Span::styled("1-9", Style::default().fg(t.key)),
-            Span::styled(" app  ", Style::default().fg(t.dim)),
-            Span::styled("s", Style::default().fg(t.key)),
-            Span::styled(" settings  ", Style::default().fg(t.dim)),
-            Span::styled("type", Style::default().fg(t.key)),
-            Span::styled(" filter", Style::default().fg(t.dim)),
-        ]),
-        footer_second,
+    frame.render_widget(Paragraph::new(tip_line), chunks[4]);
+
+    // Stable keymap — always the same line; keys in key color, verbs dim.
+    let keys = Line::from(vec![
+        Span::styled("enter", Style::default().fg(t.key)),
+        Span::styled(" open  ", Style::default().fg(t.dim)),
+        Span::styled(".", Style::default().fg(t.key)),
+        Span::styled(" resume  ", Style::default().fg(t.dim)),
+        Span::styled("space", Style::default().fg(t.key)),
+        Span::styled(" ★  ", Style::default().fg(t.dim)),
+        Span::styled("1-9", Style::default().fg(t.key)),
+        Span::styled(" agent  ", Style::default().fg(t.dim)),
+        Span::styled("n", Style::default().fg(t.key)),
+        Span::styled(" new  ", Style::default().fg(t.dim)),
+        Span::styled("s", Style::default().fg(t.key)),
+        Span::styled(" settings  ", Style::default().fg(t.dim)),
+        Span::styled("?", Style::default().fg(t.key)),
+        Span::styled(" help", Style::default().fg(t.dim)),
     ]);
-    frame.render_widget(footer, chunks[4]);
+    frame.render_widget(Paragraph::new(keys), chunks[5]);
 
     draw_install_bar(frame, app, t);
+    draw_bg_init_bar(frame, app, t);
 }
 
-fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
-    let Some(ui) = &app.install else {
-        return;
-    };
+/// Visual list rows including section separators (for panel sizing).
+fn picker_list_content_rows(app: &App) -> u16 {
+    let n = app.visible_repos.len();
+    if n == 0 {
+        return MIN_LIST_ROWS; // empty-state still gets a tall-enough list region
+    }
+    if !app.filter.is_empty() {
+        return (n as u16).max(MIN_LIST_ROWS);
+    }
+    let mut seps = 0u16;
+    let mut prev: Option<&str> = None;
+    for &idx in &app.visible_repos {
+        let badge = app.repos[idx].badge;
+        if prev != Some(badge) {
+            seps += 1;
+            prev = Some(badge);
+        }
+    }
+    (n as u16).saturating_add(seps).max(MIN_LIST_ROWS)
+}
+
+/// Shared outer rect for picker, settings, and folder browser — same silhouette.
+fn picker_panel_rect(screen: Rect, app: &App) -> Rect {
+    let list_rows = picker_list_content_rows(app);
+    panel_rect(screen, PANEL_CHROME.saturating_add(list_rows))
+}
+
+fn panel_bar_area(frame: &Frame<'_>, app: &App, row_offset: u16) -> Option<Rect> {
     let panel = app.panel_area;
     let screen = frame.area();
-    // Place just below the main panel when there's room; otherwise clamp to bottom.
-    let y = (panel.y + panel.height).min(screen.height.saturating_sub(2));
+    let y = (panel.y + panel.height + row_offset).min(screen.height.saturating_sub(2));
     if y + 1 >= screen.height {
-        return;
+        return None;
     }
     let bar_area = Rect {
         x: panel.x,
@@ -1978,23 +3161,41 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
         height: 2,
     };
     if bar_area.y + bar_area.height > screen.y + screen.height {
-        return;
+        return None;
     }
+    Some(bar_area)
+}
+
+fn spinner_frame(started: Instant) -> char {
+    let ms = started.elapsed().as_millis() as usize;
+    SPINNER[(ms / 100) % SPINNER.len()]
+}
+
+fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
+    let Some(ui) = &app.install else {
+        return;
+    };
+    // If bg init is also active, install sits on first row pair; bg init below.
+    let Some(bar_area) = panel_bar_area(frame, app, 0) else {
+        return;
+    };
 
     let label = ui.action.label().to_ascii_lowercase();
     let pct = (ui.fraction * 100.0).round() as u16;
+    let spinning = ui.finished_at.is_none() && !ui.failed;
+    let spin = if spinning {
+        format!("{} ", spinner_frame(ui.started_at))
+    } else {
+        String::new()
+    };
     let head = if ui.failed {
         format!("install {label} failed")
     } else if ui.finished_at.is_some() {
         format!("install {label} done")
     } else {
-        format!("installing {label}  {pct}%")
+        format!("{spin}installing {label}  {pct}%")
     };
-    let msg = if ui.message.len() > bar_area.width as usize {
-        format!("{}…", &ui.message[..bar_area.width.saturating_sub(1) as usize])
-    } else {
-        ui.message.clone()
-    };
+    let msg = truncate_status_line(&ui.message, bar_area.width as usize);
 
     let color = if ui.failed {
         Color::Red
@@ -2022,7 +3223,6 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
         "█".repeat(filled),
         "░".repeat(inner_w.saturating_sub(filled))
     );
-    // Prefer showing live install log line if it fits; else the bar.
     let line2 = if !msg.is_empty() && ui.finished_at.is_none() && !ui.failed {
         msg
     } else {
@@ -2040,6 +3240,73 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
             height: 1,
         },
     );
+}
+
+fn draw_bg_init_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
+    let Some(ui) = &app.bg_init else {
+        return;
+    };
+    // Stack under install bar when both present.
+    let offset = if app.install.is_some() { 2 } else { 0 };
+    let Some(bar_area) = panel_bar_area(frame, app, offset) else {
+        return;
+    };
+
+    let agent = ui.agent.label().to_ascii_lowercase();
+    let spinning = ui.finished_at.is_none() && !ui.failed;
+    let spin = if spinning {
+        format!("{} ", spinner_frame(ui.started_at))
+    } else {
+        String::new()
+    };
+    let head = if ui.failed {
+        format!("init {agent} failed · {}", ui.project)
+    } else if ui.finished_at.is_some() {
+        format!("init {agent} done · {}", ui.project)
+    } else {
+        format!("{spin}init {agent}… · {}", ui.project)
+    };
+    let color = if ui.failed {
+        Color::Red
+    } else {
+        ACCENT
+    };
+    let msg = truncate_status_line(&ui.message, bar_area.width as usize);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_status_line(&head, bar_area.width as usize),
+            Style::default().fg(color).bg(t.bg),
+        ))),
+        Rect {
+            x: bar_area.x,
+            y: bar_area.y,
+            width: bar_area.width,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(if ui.failed { Color::Red } else { t.soft }).bg(t.bg),
+        ))),
+        Rect {
+            x: bar_area.x,
+            y: bar_area.y + 1,
+            width: bar_area.width,
+            height: 1,
+        },
+    );
+}
+
+fn truncate_status_line(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_width(s) <= width {
+        return s.to_string();
+    }
+    sliding_tail(s, width)
 }
 
 /// Known install recipes for missing agent CLIs (run via `sh -lc`).
@@ -2076,7 +3343,9 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
         frame.area(),
     );
 
-    let area = centered_rect(frame.area());
+    // Same outer size as the main picker so screens share one silhouette.
+    let area = picker_panel_rect(frame.area(), app);
+    app.panel_area = area;
     let block = Block::default()
         .title(format!(" {APP_NAME} · Settings "))
         .borders(Borders::ALL)
@@ -2090,7 +3359,6 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
         .constraints([
             Constraint::Length(1), // help
             Constraint::Min(4),    // options
-            Constraint::Length(1), // spacer — pushes status one row lower
             Constraint::Length(1), // status
         ])
         .split(inner);
@@ -2136,33 +3404,43 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
     ];
 
     let mut lines = Vec::new();
+    let w = chunks[1].width as usize;
     for (i, row) in rows.iter().enumerate() {
         let selected = i == app.settings_selected;
+        let row_bg = if selected { t.surface } else { t.bg };
         let style = if selected {
             Style::default()
-                .fg(ACCENT_ON)
-                .bg(ACCENT)
+                .fg(t.text)
+                .bg(row_bg)
                 .add_modifier(Modifier::BOLD)
         } else if i >= 5 {
-            // state dir is read-only
-            Style::default().fg(t.dim)
+            Style::default().fg(t.dim).bg(row_bg)
         } else {
-            Style::default().fg(t.soft)
+            Style::default().fg(t.soft).bg(row_bg)
         };
-        let marker = if selected { ">" } else { " " };
-        lines.push(Line::from(Span::styled(format!("{marker} {row}"), style)));
+        let mut spans = vec![
+            if selected {
+                Span::styled("▌", Style::default().fg(ACCENT).bg(row_bg))
+            } else {
+                Span::styled(" ", Style::default().bg(row_bg))
+            },
+            Span::styled(format!(" {row}"), style),
+        ];
+        let used: usize = spans.iter().map(|s| display_width(s.content.as_ref())).sum();
+        if used < w {
+            spans.push(Span::styled(" ".repeat(w - used), Style::default().bg(row_bg)));
+        }
+        lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines), chunks[1]);
-    // chunks[2] = empty spacer
 
-    // Status one row lower than the option list.
     if let Some(status) = &app.status {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 status.clone(),
                 Style::default().fg(ACCENT),
             ))),
-            chunks[3],
+            chunks[2],
         );
     }
 }
@@ -2174,13 +3452,17 @@ fn draw_folder_picker(frame: &mut Frame<'_>, app: &mut App) {
         frame.area(),
     );
 
-    // Slightly taller panel so browsing feels roomy.
-    let area = folder_picker_rect(frame.area());
+    // Same outer size as the main picker; directory list scrolls inside.
+    let area = picker_panel_rect(frame.area(), app);
     app.panel_area = area;
 
     let title_path = display_path(app.folder.current_path());
+    let picker_title = match app.folder_purpose {
+        FolderPickerPurpose::WorkspaceRoot => " Choose workspace root ",
+        FolderPickerPurpose::NewProjectParent => " Choose project parent ",
+    };
     let block = Block::default()
-        .title(format!(" Choose workspace root "))
+        .title(picker_title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.border))
         .style(Style::default().bg(t.bg).fg(t.text));
@@ -2327,17 +3609,6 @@ fn draw_folder_picker(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(Paragraph::new(footer), chunks[4]);
 }
 
-fn folder_picker_rect(screen: Rect) -> Rect {
-    let width = screen.width.min(MAX_WIDTH).max(48);
-    let height = screen.height.saturating_sub(2).min(28).max(14);
-    Rect {
-        x: screen.x + screen.width.saturating_sub(width) / 2,
-        y: screen.y + screen.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
-}
-
 fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect, t: Theme) {
     let mut spans = Vec::new();
     let mut x = area.x;
@@ -2384,120 +3655,382 @@ fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect, t: Theme) {
 }
 
 fn draw_filter(frame: &mut Frame<'_>, app: &App, area: Rect, t: Theme) {
-    let value = if app.filter.is_empty() {
-        "type to filter".to_string()
+    let w = area.width as usize;
+    if app.filter.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                pad_line("/ type to filter", w),
+                Style::default().fg(t.dim),
+            ))),
+            area,
+        );
+        return;
+    }
+
+    let count = format!("{}/{}", app.visible_repos.len(), app.repos.len());
+    let count_w = display_width(&count);
+    // "/" + query + "▌" + gap + count
+    let caret = '▌';
+    let prefix = format!("/{}{}", app.filter, caret);
+    let avail = w.saturating_sub(count_w.saturating_add(1));
+    let left = if display_width(&prefix) <= avail {
+        pad_line(&prefix, avail)
     } else {
-        app.filter.clone()
+        // Keep end of query + caret visible.
+        sliding_tail(&prefix, avail)
     };
-    let style = if app.filter.is_empty() {
-        Style::default().fg(t.dim)
-    } else {
-        Style::default().fg(ACCENT)
-    };
+    let gap = " ".repeat(w.saturating_sub(display_width(&left).saturating_add(count_w)).max(0));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("/", Style::default().fg(t.dim)),
-            Span::styled(value, style),
+            Span::styled(left, Style::default().fg(t.text)),
+            Span::raw(gap),
+            Span::styled(count, Style::default().fg(t.dim)),
         ])),
         area,
     );
 }
 
+/// Column widths for one list frame (two-space gutters).
+struct ColWidths {
+    name: usize,
+    branch: usize,
+    agent: usize,
+    path: usize,
+}
+
+fn compute_columns(area_width: u16) -> ColWidths {
+    // sel(2) + name + 2 + branch(14) + 2 + agent(7) + 2 + path
+    const FIXED: usize = 2 + 2 + 14 + 2 + 7 + 2;
+    let w = area_width as usize;
+    let name = 18usize;
+    let path = w.saturating_sub(FIXED + name).max(8);
+    ColWidths {
+        name,
+        branch: 14,
+        agent: 7,
+        path,
+    }
+}
+
+fn section_label(badge: &str, root_display: &str) -> String {
+    match badge {
+        "★" => "─ ★ favorites".into(),
+        "recent" => "─ recent".into(),
+        "last" => "─ last".into(),
+        "root" => "─ root".into(),
+        _ => format!("─ {root_display}"),
+    }
+}
+
 fn draw_repos(frame: &mut Frame<'_>, app: &mut App, area: Rect, t: Theme) {
     app.hitboxes.list_top = area.y;
     app.hitboxes.list_height = area.height;
+    app.hitboxes.list_rows.clear();
     app.keep_selected_visible();
 
     let visible_rows = area.height as usize;
-    let mut lines = Vec::new();
+    let cols = compute_columns(area.width);
+    let root_disp = display_path(&workspace_root(&app.state.settings));
+    let filtering = !app.filter.is_empty();
+    let mut lines: Vec<Line> = Vec::new();
 
-    for (visible_index, repo_index) in app
-        .visible_repos
-        .iter()
-        .enumerate()
-        .skip(app.offset)
-        .take(visible_rows)
-    {
-        let repo = &app.repos[*repo_index];
-        let selected = visible_index == app.selected_visible;
-        let marker = if selected { ">" } else { " " };
-        let style = if selected {
-            Style::default()
-                .fg(t.text)
-                .add_modifier(Modifier::BOLD)
+    // Empty states.
+    if app.visible_repos.is_empty() {
+        let (l1, l2) = if filtering {
+            (
+                "no matches".to_string(),
+                "esc to clear".to_string(),
+            )
         } else {
-            Style::default().fg(t.soft)
+            (
+                format!("no git repos under {root_disp}"),
+                "n creates one · s changes root".to_string(),
+            )
         };
-
-        let badge_style = if repo.badge == "★" {
-            Style::default().fg(ACCENT)
-        } else {
-            Style::default().fg(t.dim)
-        };
-
-        // Layout: > name  branch*  agent  path  badge
-        let mut spans = vec![
-            Span::styled(format!("{marker} "), Style::default().fg(ACCENT)),
-            Span::styled(pad_or_trim(&repo.name, 18), style),
-            Span::raw(" "),
-        ];
-
-        if let Some(branch) = &repo.git_branch {
-            let mut branch_label = branch.clone();
-            if repo.git_dirty {
-                branch_label.push('*');
-            }
-            if repo.git_ahead > 0 {
-                branch_label.push_str(&format!("↑{}", repo.git_ahead));
-            }
-            let branch_style = if repo.git_dirty {
-                Style::default().fg(AMBER)
-            } else {
-                Style::default().fg(t.dim)
-            };
-            spans.push(Span::styled(pad_or_trim(&branch_label, 14), branch_style));
-        } else {
-            spans.push(Span::styled(pad_or_trim("", 14), Style::default()));
+        let pad = visible_rows.saturating_sub(2) / 2;
+        for _ in 0..pad {
+            lines.push(Line::from(""));
+            app.hitboxes.list_rows.push(None);
         }
-
-        spans.push(Span::raw(" "));
-        if let Some(action) = repo.remembered_agent {
-            spans.push(Span::styled(
-                pad_or_trim(action.label(), 7),
-                Style::default().fg(ACCENT),
-            ));
-        } else {
-            spans.push(Span::styled(pad_or_trim("", 7), Style::default()));
-        }
-
-        spans.push(Span::raw(" "));
-        let path_width = area.width.saturating_sub(50) as usize;
-        spans.push(Span::styled(
-            pad_or_trim(&display_path(&repo.path), path_width),
-            Style::default().fg(t.dim),
-        ));
-        spans.push(Span::styled(repo.badge, badge_style));
-
-        lines.push(Line::from(spans));
-    }
-
-    if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No workspaces match this filter",
+            pad_line(&l1, area.width as usize),
             Style::default().fg(t.dim),
         )));
+        app.hitboxes.list_rows.push(None);
+        lines.push(Line::from(Span::styled(
+            pad_line(&l2, area.width as usize),
+            Style::default().fg(t.dim),
+        )));
+        app.hitboxes.list_rows.push(None);
+        frame.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+
+    let show_up = app.offset > 0;
+    let mut repo_i = app.offset;
+    let mut prev_badge: Option<&str> = if repo_i > 0 {
+        Some(app.repos[app.visible_repos[repo_i - 1]].badge)
+    } else {
+        None
+    };
+
+    while lines.len() < visible_rows && repo_i < app.visible_repos.len() {
+        let vis_idx = repo_i;
+        let repo = &app.repos[app.visible_repos[vis_idx]];
+
+        // Section separator when group changes (unfiltered only).
+        if !filtering && prev_badge != Some(repo.badge) {
+            if lines.len() >= visible_rows {
+                break;
+            }
+            let label = section_label(repo.badge, &root_disp);
+            lines.push(Line::from(Span::styled(
+                pad_line(&label, area.width as usize),
+                Style::default().fg(t.dim),
+            )));
+            app.hitboxes.list_rows.push(None);
+            if lines.len() >= visible_rows {
+                break;
+            }
+        }
+
+        let selected = vis_idx == app.selected_visible;
+        let row_bg = if selected { t.surface } else { t.bg };
+        let base = if selected {
+            Style::default()
+                .fg(t.text)
+                .bg(row_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.soft).bg(row_bg)
+        };
+        let muted = Style::default().fg(t.dim).bg(row_bg);
+        let warn = Style::default().fg(t.warn).bg(row_bg);
+
+        let mut spans: Vec<Span> = Vec::new();
+        // Selection bar ▌ or space.
+        if selected {
+            spans.push(Span::styled("▌", Style::default().fg(ACCENT).bg(row_bg)));
+        } else {
+            spans.push(Span::styled(" ", muted));
+        }
+        spans.push(Span::styled(" ", base));
+
+        // ★ prefix for favorites.
+        let name_budget = cols.name;
+        let star = if repo.badge == "★" { "★ " } else { "" };
+        let name_style = base;
+        let name_spans = name_match_spans(
+            &format!("{star}{}", repo.name),
+            &app.filter,
+            name_style,
+            name_budget,
+            selected,
+            t,
+            row_bg,
+        );
+        spans.extend(name_spans);
+        spans.push(Span::styled("  ", base));
+
+        // Branch + dirty/ahead (warn only on * / ↑N).
+        if let Some(branch) = &repo.git_branch {
+            let mut suffix = String::new();
+            if repo.git_dirty {
+                suffix.push('*');
+            }
+            if repo.git_ahead > 0 {
+                suffix.push_str(&format!("↑{}", repo.git_ahead));
+            }
+            let core_w = cols.branch.saturating_sub(display_width(&suffix));
+            let core = ellipsize_end(branch, core_w);
+            let core_trim = core.trim_end();
+            if suffix.is_empty() {
+                spans.push(Span::styled(pad_line(core_trim, cols.branch), muted));
+            } else {
+                spans.push(Span::styled(pad_line(core_trim, core_w), muted));
+                spans.push(Span::styled(suffix, warn));
+            }
+        } else {
+            spans.push(Span::styled(pad_line("", cols.branch), muted));
+        }
+
+        spans.push(Span::styled("  ", base));
+
+        // Remembered agent — dim / text, never accent.
+        let agent_style = if selected {
+            Style::default().fg(t.text).bg(row_bg)
+        } else {
+            Style::default().fg(t.dim).bg(row_bg)
+        };
+        if let Some(action) = repo.remembered_agent {
+            spans.push(Span::styled(
+                pad_line(action.label(), cols.agent),
+                agent_style,
+            ));
+        } else {
+            spans.push(Span::styled(pad_line("", cols.agent), agent_style));
+        }
+
+        spans.push(Span::styled("  ", base));
+
+        // Path: root prefix dimmer than leaf.
+        let full = display_path(&repo.path);
+        let path_spans = path_column_spans(&full, &root_disp, cols.path, row_bg, t, selected);
+        spans.extend(path_spans);
+
+        // Pad remainder so surface bleeds full width.
+        let used: usize = spans.iter().map(|s| display_width(s.content.as_ref())).sum();
+        if used < area.width as usize {
+            spans.push(Span::styled(
+                " ".repeat(area.width as usize - used),
+                Style::default().bg(row_bg),
+            ));
+        }
+
+        lines.push(Line::from(spans));
+        app.hitboxes.list_rows.push(Some(vis_idx));
+        prev_badge = Some(repo.badge);
+        repo_i += 1;
+    }
+
+    // Pad remaining rows.
+    while lines.len() < visible_rows {
+        lines.push(Line::from(Span::styled(
+            " ".repeat(area.width as usize),
+            Style::default().bg(t.bg),
+        )));
+        app.hitboxes.list_rows.push(None);
     }
 
     frame.render_widget(Paragraph::new(lines), area);
+
+    // Scroll affordance ▲/▼ in corner cells.
+    let more_below = repo_i < app.visible_repos.len();
+    if show_up && area.width > 0 && area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("▲", Style::default().fg(t.dim).bg(t.bg))),
+            Rect {
+                x: area.x + area.width - 1,
+                y: area.y,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
+    if more_below && area.width > 0 && area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("▼", Style::default().fg(t.dim).bg(t.bg))),
+            Rect {
+                x: area.x + area.width - 1,
+                y: area.y + area.height - 1,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
 }
 
-fn centered_rect(screen: Rect) -> Rect {
+/// Bold matched substrings in the name (filter tokens).
+fn name_match_spans(
+    name: &str,
+    filter: &str,
+    base: Style,
+    width: usize,
+    selected: bool,
+    t: Theme,
+    row_bg: Color,
+) -> Vec<Span<'static>> {
+    let display = ellipsize_end(name, width);
+    let raw = display.trim_end();
+    let pad = width.saturating_sub(display_width(raw));
+    let query = filter.trim().to_lowercase();
+    if query.is_empty() {
+        return vec![Span::styled(pad_line(name, width), base)];
+    }
+
+    let lower = raw.to_lowercase();
+    let mut best: Option<(usize, usize)> = None;
+    for part in query.split_whitespace() {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(pos) = lower.find(part) {
+            best = Some((pos, pos + part.len()));
+            break;
+        }
+    }
+
+    let mut spans = Vec::new();
+    if let Some((start, end)) = best {
+        // Byte indices on lowercased ASCII-compatible name (filters are lowercase ASCII).
+        let before = raw.get(..start).unwrap_or("").to_string();
+        let mid = raw.get(start..end).unwrap_or("").to_string();
+        let after = raw.get(end..).unwrap_or("").to_string();
+        let bold = Style::default()
+            .fg(if selected { t.text } else { t.soft })
+            .bg(row_bg)
+            .add_modifier(Modifier::BOLD);
+        if !before.is_empty() {
+            spans.push(Span::styled(before, base));
+        }
+        if !mid.is_empty() {
+            spans.push(Span::styled(mid, bold));
+        }
+        if !after.is_empty() {
+            spans.push(Span::styled(after, base));
+        }
+        if pad > 0 {
+            spans.push(Span::styled(" ".repeat(pad), base));
+        }
+    } else {
+        spans.push(Span::styled(pad_line(raw, width), base));
+    }
+    spans
+}
+
+fn path_column_spans(
+    full: &str,
+    root_disp: &str,
+    width: usize,
+    row_bg: Color,
+    t: Theme,
+    _selected: bool,
+) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(t.dim).bg(row_bg);
+    let leaf_st = Style::default().fg(t.muted).bg(row_bg);
+
+    let prefix = format!("{root_disp}/");
+    if full.starts_with(&prefix) {
+        let truncated = ellipsize_front(full, width);
+        let tr = truncated.trim_end();
+        if let Some(rest) = tr.strip_prefix(&prefix) {
+            let p = pad_line(&prefix, display_width(&prefix).min(width));
+            let r_w = width.saturating_sub(display_width(&p));
+            return vec![
+                Span::styled(p, dim),
+                Span::styled(pad_line(rest, r_w), leaf_st),
+            ];
+        }
+        return vec![Span::styled(pad_line(tr, width), dim)];
+    }
+
+    vec![Span::styled(ellipsize_front(full, width), dim)]
+}
+
+/// Content-aware centered panel (command-palette style).
+fn panel_rect(screen: Rect, content_rows: u16) -> Rect {
     let width = screen.width.min(MAX_WIDTH).max(40);
-    let height = screen.height.saturating_sub(4).min(24).max(12);
+    // Leave a little margin, but allow taller panels on large terminals.
+    let max_h = screen.height.saturating_sub(2).max(MIN_PANEL_HEIGHT);
+    let height = content_rows
+        .saturating_add(2) // borders
+        .max(MIN_PANEL_HEIGHT)
+        .min(max_h)
+        .min(screen.height.max(1));
     Rect {
         x: screen.x + screen.width.saturating_sub(width) / 2,
         y: screen.y + screen.height.saturating_sub(height) / 2,
-        width,
+        width: width.min(screen.width.max(1)),
         height,
     }
 }
@@ -2511,34 +4044,32 @@ fn inset(area: Rect, horizontal: u16, vertical: u16) -> Rect {
     }
 }
 
-fn discover_repos(state: &LauncherState) -> Vec<Repo> {
+/// FS-only workspace list (no git). Instant; safe for first paint.
+fn discover_candidates(state: &LauncherState) -> Vec<(PathBuf, &'static str)> {
     if demo_mode_enabled() {
-        return demo_repos();
+        // Paths only; git meta left empty for demo too (or filled sync in demo_repos).
+        return demo_repos()
+            .into_iter()
+            .map(|r| (r.path, r.badge))
+            .collect();
     }
 
     let home = home_dir();
     let data = data_dir();
     let root = workspace_root(&state.settings);
-    let mut repos = Vec::new();
+    let mut candidates: Vec<(PathBuf, &'static str)> = Vec::new();
     let mut seen = HashSet::new();
 
-    // 1) Favorites first (pin order, newest pin first).
     for path in &state.favorites {
-        add_repo(&mut repos, &mut seen, path.clone(), "★", state);
+        push_candidate(&mut candidates, &mut seen, path.clone(), "★");
     }
-
-    // 2) Recents.
     for recent in read_recent_workspaces(&data) {
-        add_repo(&mut repos, &mut seen, recent, "recent", state);
+        push_candidate(&mut candidates, &mut seen, recent, "recent");
     }
-
-    // 3) Last terminal cwd.
     if let Some(last_cwd) = read_last_cwd(&data) {
-        add_repo(&mut repos, &mut seen, last_cwd, "last", state);
+        push_candidate(&mut candidates, &mut seen, last_cwd, "last");
     }
-
-    // 4) Workspace root + git children.
-    add_repo(&mut repos, &mut seen, root.clone(), "root", state);
+    push_candidate(&mut candidates, &mut seen, root.clone(), "root");
 
     if let Ok(entries) = fs::read_dir(&root) {
         let mut paths: Vec<PathBuf> = entries
@@ -2556,92 +4087,126 @@ fn discover_repos(state: &LauncherState) -> Vec<Repo> {
             })
             .collect();
         paths.sort_by_key(|path| path.file_name().map(|name| name.to_os_string()));
-
         for path in paths {
-            add_repo(&mut repos, &mut seen, path, "", state);
+            push_candidate(&mut candidates, &mut seen, path, "");
         }
     }
 
-    if repos.is_empty() {
-        add_repo(&mut repos, &mut seen, home, "home", state);
+    if candidates.is_empty() {
+        push_candidate(&mut candidates, &mut seen, home, "home");
     }
-
-    repos
+    candidates
 }
 
-fn add_repo(
-    repos: &mut Vec<Repo>,
+fn repos_from_candidates(
+    candidates: Vec<(PathBuf, &'static str)>,
+    state: &LauncherState,
+) -> Vec<Repo> {
+    if demo_mode_enabled() {
+        return demo_repos();
+    }
+    candidates
+        .into_iter()
+        .map(|(path, badge)| {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let remembered_agent = state.agent_for(&path);
+            Repo {
+                name,
+                path,
+                badge,
+                git_branch: None,
+                git_dirty: false,
+                git_ahead: 0,
+                remembered_agent,
+            }
+        })
+        .collect()
+}
+
+/// Fan out git inspect; UI paints immediately and `poll_git_meta` fills badges.
+/// ponytail: one thread per path; a stuck network/iCloud mount can leak a blocked thread
+/// for process lifetime. UI side abandons the channel after 10 s (`git_started_at`) so the
+/// poll loop is not pinned at 40 ms forever.
+fn spawn_git_metadata(paths: Vec<PathBuf>) -> (Receiver<(PathBuf, GitMeta)>, usize) {
+    // Demo ships pre-baked branch/dirty; real inspect would clobber badges with empty.
+    if demo_mode_enabled() {
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        return (rx, 0);
+    }
+    let n = paths.len();
+    let (tx, rx) = mpsc::channel();
+    for path in paths {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let (branch, dirty, ahead) = inspect_git(&path);
+            let _ = tx.send((
+                path,
+                GitMeta {
+                    branch,
+                    dirty,
+                    ahead,
+                },
+            ));
+        });
+    }
+    (rx, n)
+}
+
+fn push_candidate(
+    candidates: &mut Vec<(PathBuf, &'static str)>,
     seen: &mut HashSet<PathBuf>,
     path: PathBuf,
     badge: &'static str,
-    state: &LauncherState,
 ) {
-    if !path.is_dir() || !seen.insert(path.clone()) {
-        return;
+    if path.is_dir() && seen.insert(path.clone()) {
+        candidates.push((path, badge));
     }
-
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
-    let (git_branch, git_dirty, git_ahead) = inspect_git(&path);
-    let remembered_agent = state.agent_for(&path);
-    repos.push(Repo {
-        name,
-        path,
-        badge,
-        git_branch,
-        git_dirty,
-        git_ahead,
-        remembered_agent,
-    });
 }
 
-/// Fast-ish git snapshot for row metadata. Failures → no git badge.
+/// Git snapshot for row metadata in a single spawn: `status --porcelain=v2 --branch`
+/// carries branch, dirty, and ahead at once (also covers worktrees / nested repos).
+/// Failures → no git badge.
 fn inspect_git(path: &Path) -> (Option<String>, bool, u32) {
-    if !path.join(".git").exists() {
-        // Also accept worktrees / nested: try rev-parse
-        let ok = Command::new("git")
-            .args(["-C", &path.display().to_string(), "rev-parse", "--is-inside-work-tree"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !ok {
-            return (None, false, 0);
+    let output = match Command::new("git")
+        .args([
+            "-C",
+            &path.display().to_string(),
+            "status",
+            "--porcelain=v2",
+            "--branch",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return (None, false, 0),
+    };
+    parse_porcelain_v2(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_porcelain_v2(text: &str) -> (Option<String>, bool, u32) {
+    let mut branch = None;
+    let mut dirty = false;
+    let mut ahead = 0u32;
+    for line in text.lines() {
+        if let Some(head) = line.strip_prefix("# branch.head ") {
+            if head != "(detached)" && !head.is_empty() {
+                branch = Some(head.to_string());
+            }
+        } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
+            ahead = ab
+                .split_whitespace()
+                .next()
+                .and_then(|a| a.strip_prefix('+'))
+                .and_then(|a| a.parse().ok())
+                .unwrap_or(0);
+        } else if !line.starts_with('#') && !line.is_empty() {
+            dirty = true;
         }
     }
-
-    let path_str = path.display().to_string();
-
-    let branch = Command::new("git")
-        .args(["-C", &path_str, "rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty() && s != "HEAD");
-
-    let dirty = Command::new("git")
-        .args(["-C", &path_str, "status", "--porcelain"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
-
-    let ahead = Command::new("git")
-        .args(["-C", &path_str, "rev-list", "--count", "@{u}..HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<u32>()
-                .ok()
-        })
-        .unwrap_or(0);
-
     (branch, dirty, ahead)
 }
 
@@ -3057,6 +4622,8 @@ fn run_child_app(launch: Launch) -> io::Result<()> {
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     record_recent_workspace(&launch.cwd);
 
+    // Headless project init runs in-background inside the TUI (see start_background_init).
+
     let Some(command) = launch.action.resolve_command() else {
         return replace_with_shell(launch);
     };
@@ -3091,4 +4658,435 @@ fn run_child_app(launch: Launch) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+// ── New project: form UI (pure helpers live in `new_project`) ──────────────
+
+fn eligible_init_agents() -> Vec<Action> {
+    Action::all()
+        .iter()
+        .copied()
+        .filter(|a| *a != Action::Shell && a.is_available())
+        .collect()
+}
+
+fn default_init_agent(settings: &SettingsFile) -> Option<Action> {
+    let eligible = eligible_init_agents();
+    if eligible.is_empty() {
+        return None;
+    }
+    if let Some(id) = settings.default_agent.as_deref() {
+        if let Some(action) = Action::from_id(id) {
+            if eligible.iter().any(|a| *a == action) {
+                return Some(action);
+            }
+        }
+    }
+    if eligible.iter().any(|a| *a == Action::Grok) {
+        return Some(Action::Grok);
+    }
+    Some(eligible[0])
+}
+
+/// Split resolved command into program + argv prefix.
+/// Whitespace-split only — paths with spaces in custom `GROK_TERMINAL_*_COMMAND` /
+/// `MC_*_COMMAND` env overrides are not supported.
+fn resolve_program(action: Action) -> Option<(String, Vec<String>)> {
+    let cmd = action.resolve_command()?;
+    let mut parts = cmd.split_whitespace();
+    let program = parts.next()?.to_string();
+    let prefix: Vec<String> = parts.map(|s| s.to_string()).collect();
+    Some((program, prefix))
+}
+
+fn action_to_init_kind(action: Action) -> Option<InitAgentKind> {
+    match action {
+        Action::Grok => Some(InitAgentKind::Grok),
+        Action::Codex => Some(InitAgentKind::Codex),
+        Action::Pi => Some(InitAgentKind::Pi),
+        Action::Cursor => Some(InitAgentKind::Cursor),
+        Action::Claude => Some(InitAgentKind::Claude),
+        Action::Amp => Some(InitAgentKind::Amp),
+        Action::Devin => Some(InitAgentKind::Devin),
+        Action::Droid => Some(InitAgentKind::Droid),
+        Action::Shell => None,
+    }
+}
+
+fn init_agent_elevated(action: Action) -> bool {
+    action_to_init_kind(action)
+        .map(|k| k.elevated_autonomy())
+        .unwrap_or(false)
+}
+
+fn field_row_style(selected: bool, t: &Theme) -> Style {
+    if selected {
+        Style::default()
+            .fg(ACCENT_ON)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(t.soft).bg(t.bg)
+    }
+}
+
+/// `?` keymap overlay — reuses New Project popup chrome (Clear + opaque + border).
+fn draw_help_overlay(frame: &mut Frame<'_>, _app: &App) {
+    let t = _app.theme();
+    let lines: &[&str] = &[
+        "enter        open selected workspace with agent",
+        ".            resume last session",
+        "space        toggle favorite ★",
+        "1-9          pick agent chip",
+        "n            new project",
+        "s            settings",
+        "type         filter by name or path · esc clears",
+        "e            open in editor (Default IDE)",
+        "f            reveal in Finder",
+        "c            copy workspace path",
+        "g            open GitHub (if remote)",
+        "hover        dim agent chip → install missing CLI",
+        "theme        Settings → UI theme (auto / light / dark)",
+        "",
+        "esc / ?      close this help",
+    ];
+    let content = lines.len() as u16;
+    let width = frame.area().width.min(72).max(40);
+    let height = (content + 4)
+        .min(frame.area().height.saturating_sub(2))
+        .max(10);
+    let area = Rect {
+        x: frame.area().x + frame.area().width.saturating_sub(width) / 2,
+        y: frame.area().y + frame.area().height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(t.bg).fg(t.text)),
+        area,
+    );
+    let block = Block::default()
+        .title(format!(" {APP_NAME} · Keys "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(t.bg).fg(t.text));
+    frame.render_widget(block, area);
+
+    let inner = inset(area, 2, 1);
+    let mut out = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            out.push(Line::from(""));
+            continue;
+        }
+        let (key, rest) = if let Some(idx) = line.find(char::is_whitespace) {
+            (line[..idx].to_string(), line[idx..].trim_start().to_string())
+        } else {
+            (line.to_string(), String::new())
+        };
+        out.push(Line::from(vec![
+            Span::styled(pad_line(&key, 12), Style::default().fg(t.key).bg(t.bg)),
+            Span::styled(rest, Style::default().fg(t.dim).bg(t.bg)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(out), inner);
+}
+
+/// Modal popup over the picker (not a full-screen replacement).
+fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
+    let t = app.theme();
+    let show_status = app
+        .status
+        .as_ref()
+        .is_some_and(|s| !s.trim().is_empty());
+    let area = new_project_popup_rect(frame.area(), show_status);
+    app.panel_area = area;
+
+    // Opaque layer: Clear removes underneath glyphs; solid fill paints every cell.
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(t.bg).fg(t.text)),
+        area,
+    );
+
+    let block = Block::default()
+        .title(format!(" {APP_NAME} · New project "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(t.bg).fg(t.text));
+    frame.render_widget(block, area);
+
+    // Horizontal pad 2, vertical pad 0 — border already occupies top/bottom of `area`.
+    let inner = inset(area, 2, 0);
+    // Sit content just inside the border (not double-padded).
+    let inner = Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(1),
+        width: inner.width,
+        height: inner.height.saturating_sub(2),
+    };
+    frame.render_widget(
+        Block::default().style(Style::default().bg(t.bg)),
+        inner,
+    );
+
+    // Exactly the field rows — status only when there is a message (no blank spare row).
+    // help 1 · Name/Parent/Template/Init 4 · Notes label 1 · notes box N · Create 1 · [status 1]
+    let mut constraints = vec![
+        Constraint::Length(1), // help
+        Constraint::Length(4), // name / parent / template / init
+        Constraint::Length(1), // notes label
+        Constraint::Length(NOTES_VIEWPORT_ROWS), // notes box
+        Constraint::Length(1), // create
+    ];
+    if show_status {
+        constraints.push(Constraint::Length(1));
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
+
+    let col_w = chunks[0].width.max(1) as usize;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            pad_line(
+                "tab · shift-enter=newline · enter next · create/ctrl-enter · shift-up · esc",
+                col_w,
+            ),
+            Style::default().fg(t.dim).bg(t.bg),
+        )))
+        .style(Style::default().bg(t.bg)),
+        chunks[0],
+    );
+
+    let name_raw = if app.new_project.name.is_empty() {
+        "…".to_string()
+    } else {
+        app.new_project.name.clone()
+    };
+    let parent_raw = format!("{}  ↵", display_path(&app.new_project.parent));
+    let elevated = app
+        .new_project
+        .init_agent
+        .map(init_agent_elevated)
+        .unwrap_or(false);
+    let init_label = match app.new_project.init_agent {
+        Some(a) if elevated => format!("{} · full tools", a.label()),
+        Some(a) => a.label().to_string(),
+        None => "none (scaffold only)".into(),
+    };
+    let create_label = match app.new_project.init_agent {
+        Some(_) if elevated => "scaffold + headless init · full tools",
+        Some(_) => "scaffold + headless init",
+        None => "scaffold only",
+    };
+
+    let top_rows: [(&str, String, NewProjectField); 4] = [
+        ("Name", name_raw, NewProjectField::Name),
+        ("Parent", parent_raw, NewProjectField::Parent),
+        (
+            "Template",
+            app.new_project.template.label().to_string(),
+            NewProjectField::Template,
+        ),
+        ("Init agent", init_label, NewProjectField::InitAgent),
+    ];
+
+    let field_w = chunks[1].width.max(1) as usize;
+    let mut top_lines = Vec::new();
+    for (label, value, field) in top_rows {
+        let selected = app.new_project.field == field;
+        let style = field_row_style(selected, &t);
+        let marker = if selected { ">" } else { " " };
+        let prefix = format!("{marker} {label:<11} ");
+        let avail = field_w.saturating_sub(display_width(&prefix));
+        // Name: sliding tail keeps caret + recent chars; Parent: front-ellipsize keeps leaf.
+        let value_out = match field {
+            NewProjectField::Name if selected => {
+                let with_caret = if app.new_project.name.is_empty() {
+                    format!("▌{value}")
+                } else {
+                    format!("{value}▌")
+                };
+                sliding_tail(&with_caret, avail)
+            }
+            NewProjectField::Name => sliding_tail(&value, avail),
+            // Parent keeps the leaf visible (sliding_tail shows the end of the path).
+            NewProjectField::Parent => sliding_tail(&value, avail),
+            _ => sliding_tail(&value, avail),
+        };
+        let raw = format!("{prefix}{value_out}");
+        top_lines.push(Line::from(Span::styled(pad_line(&raw, field_w), style)));
+    }
+    frame.render_widget(
+        Paragraph::new(top_lines).style(Style::default().bg(t.bg)),
+        chunks[1],
+    );
+
+    // Notes label row
+    let notes_selected = app.new_project.field == NewProjectField::Notes;
+    let notes_label_style = field_row_style(notes_selected, &t);
+    let notes_marker = if notes_selected { ">" } else { " " };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            pad_line(&format!("{notes_marker} {:<11}", "Notes"), field_w),
+            notes_label_style,
+        )))
+        .style(Style::default().bg(t.bg)),
+        chunks[2],
+    );
+
+    // 3-row notes viewport (append-mode caret at end of text).
+    app.new_project.notes_scroll =
+        clamp_notes_scroll(&app.new_project.notes, app.new_project.notes_scroll);
+    let viewport = notes_viewport(&app.new_project.notes, app.new_project.notes_scroll);
+    let notes_empty = app.new_project.notes.is_empty();
+    let notes_box_w = chunks[3].width.max(1) as usize;
+    let end_line_idx = new_project::notes_lines(&app.new_project.notes)
+        .len()
+        .saturating_sub(1);
+    let notes_indent = "  ";
+    let notes_avail = notes_box_w.saturating_sub(display_width(notes_indent));
+    let mut note_lines = Vec::new();
+    for (i, line) in viewport.iter().enumerate() {
+        let line_idx = app.new_project.notes_scroll as usize + i;
+        let mut text = if notes_empty && i == 0 {
+            "optional — what is this project?".to_string()
+        } else {
+            line.clone()
+        };
+        if notes_selected && line_idx == end_line_idx {
+            text = if notes_empty {
+                format!("▌{text}")
+            } else {
+                format!("{text}▌")
+            };
+        }
+        // Sliding tail so long lines keep the caret / recent input visible.
+        let text = sliding_tail(&text, notes_avail);
+        let style = if notes_selected {
+            Style::default().fg(ACCENT_ON).bg(ACCENT)
+        } else if notes_empty {
+            Style::default().fg(t.dim).bg(t.bg)
+        } else {
+            Style::default().fg(t.soft).bg(t.bg)
+        };
+        let raw = format!("{notes_indent}{text}");
+        note_lines.push(Line::from(Span::styled(pad_line(&raw, notes_box_w), style)));
+    }
+    frame.render_widget(
+        Paragraph::new(note_lines).style(Style::default().bg(t.bg)),
+        chunks[3],
+    );
+
+    // Create row
+    let create_selected = app.new_project.field == NewProjectField::Create;
+    let create_style = field_row_style(create_selected, &t);
+    let create_marker = if create_selected { ">" } else { " " };
+    let create_raw = format!("{create_marker} {:<11} {create_label}", "Create");
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            pad_line(&create_raw, chunks[4].width.max(1) as usize),
+            create_style,
+        )))
+        .style(Style::default().bg(t.bg)),
+        chunks[4],
+    );
+
+    if show_status {
+        if let Some(status) = app.status.as_deref() {
+            let status_w = chunks[5].width.max(1) as usize;
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    pad_line(status, status_w),
+                    Style::default().fg(ACCENT).bg(t.bg),
+                )))
+                .style(Style::default().bg(t.bg)),
+                chunks[5],
+            );
+        }
+    }
+}
+
+fn new_project_popup_rect(screen: Rect, show_status: bool) -> Rect {
+    // Width: comfortable default, never larger than screen.
+    let width = if screen.width >= 44 {
+        screen.width.min(76).max(44)
+    } else {
+        screen.width.max(1)
+    };
+    // Height = border (2) + exact content rows (no blank status when idle).
+    // help1 + fields4 + notes_label1 + notes_box N + create1 [+ status1]
+    let content_rows: u16 =
+        1 + 4 + 1 + NOTES_VIEWPORT_ROWS + 1 + if show_status { 1 } else { 0 };
+    let height = content_rows
+        .saturating_add(2) // top + bottom border
+        .min(screen.height.max(1));
+    Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width: width.min(screen.width.max(1)),
+        height,
+    }
+}
+
+/// Map a screen row to a New Project field using the same vertical layout as draw:
+/// help(1) · Name/Parent/Template/Init(4) · Notes label(1) · notes box(3) · Create(1).
+fn hit_test_new_project_field(inner: Rect, row: u16) -> Option<NewProjectField> {
+    if inner.height == 0 || row < inner.y || row >= inner.y.saturating_add(inner.height) {
+        return None;
+    }
+    let r = row - inner.y;
+    const HELP: u16 = 1;
+    const TOP_FIELDS: u16 = 4;
+    const NOTES_LABEL: u16 = 1;
+    let notes_box = NOTES_VIEWPORT_ROWS;
+    let top_start = HELP;
+    let notes_start = top_start + TOP_FIELDS;
+    let notes_end = notes_start + NOTES_LABEL + notes_box; // exclusive end of notes region
+    let create_row = notes_end;
+
+    if r < top_start {
+        return None; // help line
+    }
+    if r < notes_start {
+        return Some(
+            [
+                NewProjectField::Name,
+                NewProjectField::Parent,
+                NewProjectField::Template,
+                NewProjectField::InitAgent,
+            ][(r - top_start) as usize],
+        );
+    }
+    if r < notes_end {
+        return Some(NewProjectField::Notes);
+    }
+    if r == create_row {
+        return Some(NewProjectField::Create);
+    }
+    None // filler / status
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_porcelain_v2;
+
+    #[test]
+    fn porcelain_v2_branch_dirty_ahead() {
+        let clean = "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +3 -0\n";
+        assert_eq!(parse_porcelain_v2(clean), (Some("main".into()), false, 3));
+
+        let dirty = "# branch.oid abc\n# branch.head feat/x\n1 .M N... 100644 100644 100644 abc def src/main.rs\n";
+        assert_eq!(parse_porcelain_v2(dirty), (Some("feat/x".into()), true, 0));
+
+        let detached = "# branch.oid abc\n# branch.head (detached)\n";
+        assert_eq!(parse_porcelain_v2(detached), (None, false, 0));
+
+        // No upstream → no branch.ab line → ahead 0.
+        assert_eq!(parse_porcelain_v2("# branch.head main\n"), (Some("main".into()), false, 0));
+    }
 }

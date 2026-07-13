@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.2.1] — 2026-07-13
+
+### 🚀 Launch pad
+- **New Project** popup — scaffold a repo + optional harness-neutral headless agent init (stays in the TUI)
+- Multi-line notes (Shift+Enter), content-sized popup, Finder-style parent picker
+
+### ✨ Launcher UI
+- Selection is unmissable: full-width surface + `▌` accent bar
+- Color discipline: orange = interaction only; remembered agents calm; dirty git uses amber warn
+- Shared taller panel for picker · settings · folder browser
+- Section separators instead of noisy badge column
+- Honest `…` truncation, filter caret + live count + bold matches
+- One live status line + `?` keymap overlay; scroll ▲/▼; empty states
+
+### 🎬 Motion (silence at rest)
+- Tips row above the stable keymap — typewriter reveal, sparkle, orange color ramp (~30 s, preemptible)
+- Braille spinner only while install/init jobs run
+- One-frame `T-0 · liftoff` brand paint on launch (zero delay)
+- `✦ created` sparkle after new project
+
+### ⚡ Performance
+- Drain all pending keys/mouse before one draw (paste + drag feel instant)
+- Paint workspaces first; git badges fill in async (dead mounts can’t hang the UI)
+- Discovery overlaps splash; re-discover when returning from an agent
+- Broker history as chunk list + coalesce (no quadratic string copy)
+- Skip idle `lsof` when no clients / no PTY output
+- Drop 80 ms artificial delay on browser tab start
+
+### 🛠 Fixes
+- Event-loop `continue` no longer renders one keystroke late
+- Settings mouse: click to select, second click to activate
+- Demo mode keeps baked git badges for screenshots
+- Stuck git inspect abandons after 10 s (no forever-40 ms poll)
+
 ## [0.2.0] — 2026-07-11
 
 ### Highlights

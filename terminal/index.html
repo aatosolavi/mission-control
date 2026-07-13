@@ -304,6 +304,9 @@
       letterSpacing: 0,
       mouseEvents: true,
       scrollback: 10000,
+      // macOS: Option must act as Meta/Alt so Option+Backspace reaches the PTY as
+      // word-delete (otherwise Option often inserts nothing useful / plain Backspace).
+      macOptionIsMeta: true,
       fastScrollModifier: 'alt',
       rightClickSelectsWord: false,
       termName: 'xterm-256color',
@@ -515,24 +518,22 @@
           lastSentRows = 0;
         }
         everConnected = true;
+        // doFit is sync — send start immediately (no artificial 80ms delay).
         doFit();
         grabFocus();
-        // Tell PTY the real size, then start in the selected workspace.
-        setTimeout(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            const { cols, rows } = term;
-            ws.send(JSON.stringify({
-              type: 'start',
-              sessionId,
-              cols,
-              rows,
-              cwd,
-              // Resolved light/dark so mc auto theme matches browser chrome.
-              theme: resolveThemeMode(),
-            }));
-            grabFocus();
-          }
-        }, 80);
+        if (ws.readyState === WebSocket.OPEN) {
+          const { cols, rows } = term;
+          ws.send(JSON.stringify({
+            type: 'start',
+            sessionId,
+            cols,
+            rows,
+            cwd,
+            // Resolved light/dark so mc auto theme matches browser chrome.
+            theme: resolveThemeMode(),
+          }));
+          grabFocus();
+        }
       };
 
       ws.onmessage = (event) => {

@@ -1,0 +1,699 @@
+//! Pure helpers for New Project: scaffold, headless init recipes, text editing.
+//! UI / App state stays in `main.rs`.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
+
+use unicode_width::UnicodeWidthChar;
+
+pub const NOTES_VIEWPORT_ROWS: u16 = 3;
+pub const NOTES_MAX_CHARS: usize = 2000;
+pub const NAME_MAX_CHARS: usize = 64;
+
+/// Scaffold template (mechanical L1+L2 files only).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ProjectTemplate {
+    Agent,
+    Minimal,
+}
+
+impl ProjectTemplate {
+    pub fn label(self) -> &'static str {
+        match self {
+            ProjectTemplate::Agent => "agent",
+            ProjectTemplate::Minimal => "minimal",
+        }
+    }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            ProjectTemplate::Agent => ProjectTemplate::Minimal,
+            ProjectTemplate::Minimal => ProjectTemplate::Agent,
+        }
+    }
+}
+
+/// Agents that have a headless init recipe (not Shell).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InitAgentKind {
+    Grok,
+    Codex,
+    Pi,
+    Cursor,
+    Claude,
+    Amp,
+    Devin,
+    Droid,
+}
+
+impl InitAgentKind {
+    /// True when the recipe grants elevated tool autonomy (skip prompts / force / auto-write).
+    pub fn elevated_autonomy(self) -> bool {
+        match self {
+            InitAgentKind::Grok
+            | InitAgentKind::Claude
+            | InitAgentKind::Cursor
+            | InitAgentKind::Droid
+            | InitAgentKind::Devin => true,
+            // Codex sandbox workspace-write; Pi/Amp open-ish but less "dangerous" labeled.
+            InitAgentKind::Codex | InitAgentKind::Pi | InitAgentKind::Amp => false,
+        }
+    }
+}
+
+/// Per-agent unattended init invocation (argv only — no shell).
+#[derive(Clone)]
+pub struct InitCommand {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+}
+
+pub struct InitPrompt {
+    pub project_name: String,
+    pub template: ProjectTemplate,
+    pub notes: String,
+}
+
+pub fn compose_init_prompt(p: &InitPrompt) -> String {
+    let notes = p.notes.trim();
+    let notes_block = if notes.is_empty() {
+        "(none — sensible defaults for a new local project)".to_string()
+    } else {
+        notes.to_string()
+    };
+    format!(
+        r#"Bootstrap this brand-new local git repository for agent-assisted development.
+
+Follow the repository /init bootstrap workflow if you have it (AGENTS.md, docs/INDEX.md,
+versioned git hooks, stack detection, quality scripts, verify). If you do not have an
+/init skill, still produce an equivalent professional starter: AGENTS.md, docs/INDEX.md,
+README, .gitignore, and versioned hooks where appropriate.
+
+Rules:
+- Work only inside this repository working directory.
+- Merge with existing starter files; do not delete them blindly.
+- Do not create a GitHub remote or push unless asked.
+- Prefer production-complete defaults; fail loud; no placeholder stubs.
+
+Project name: {name}
+Scaffold template: {template}
+
+User notes about the project:
+{notes}
+
+When finished, summarize files created/changed and any verification you ran."#,
+        name = p.project_name,
+        template = p.template.label(),
+        notes = notes_block,
+    )
+}
+
+/// Build argv for unattended init. Prompt is a single argv element (never shell-interpolated).
+pub fn build_init_command(
+    kind: InitAgentKind,
+    program: String,
+    prefix_args: Vec<String>,
+    cwd: &Path,
+    prompt: &str,
+) -> InitCommand {
+    let cwd_str = cwd.display().to_string();
+    let mut args = prefix_args;
+    match kind {
+        InitAgentKind::Grok => {
+            args.extend([
+                "-p".into(),
+                prompt.to_string(),
+                "--cwd".into(),
+                cwd_str,
+                "--always-approve".into(),
+                "--permission-mode".into(),
+                "acceptEdits".into(),
+            ]);
+        }
+        InitAgentKind::Codex => {
+            args.extend([
+                "exec".into(),
+                "-C".into(),
+                cwd_str,
+                "--sandbox".into(),
+                "workspace-write".into(),
+                prompt.to_string(),
+            ]);
+        }
+        InitAgentKind::Claude => {
+            args.extend([
+                "-p".into(),
+                prompt.to_string(),
+                "--dangerously-skip-permissions".into(),
+            ]);
+        }
+        InitAgentKind::Cursor => {
+            args.extend([
+                "-p".into(),
+                "--force".into(),
+                "--trust".into(),
+                "--workspace".into(),
+                cwd_str,
+                "--output-format".into(),
+                "text".into(),
+                prompt.to_string(),
+            ]);
+        }
+        InitAgentKind::Pi => {
+            args.extend(["-p".into(), "-a".into(), prompt.to_string()]);
+        }
+        InitAgentKind::Amp => {
+            args.extend(["-x".into(), prompt.to_string()]);
+        }
+        InitAgentKind::Devin => {
+            args.extend([
+                "-p".into(),
+                prompt.to_string(),
+                "--permission-mode".into(),
+                "accept-edits".into(),
+            ]);
+        }
+        InitAgentKind::Droid => {
+            args.extend([
+                "exec".into(),
+                "--cwd".into(),
+                cwd_str,
+                "--auto".into(),
+                "medium".into(),
+                prompt.to_string(),
+            ]);
+        }
+    }
+    InitCommand {
+        program,
+        args,
+        cwd: cwd.to_path_buf(),
+    }
+}
+
+/// Slug is always a single path segment (no `/`, no `..`) by construction.
+pub fn slugify_project_name(raw: &str) -> Result<String, String> {
+    let s = raw.trim().to_lowercase();
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if matches!(c, ' ' | '_' | '-' | '.') {
+            if !out.is_empty() && !prev_dash {
+                out.push('-');
+                prev_dash = true;
+            }
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        return Err("name needs ascii letters/digits".into());
+    }
+    Ok(out)
+}
+
+const SCAFFOLD_GITIGNORE: &str = "\
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+.idea/
+.vscode/
+node_modules/
+target/
+dist/
+build/
+";
+
+fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Run git while the TUI owns the terminal — never inherit stdio or "Initialized empty
+/// Git repository" / commit banners paint over the alternate screen.
+fn git_silent(args: &[&str]) -> Result<std::process::ExitStatus, String> {
+    Command::new("git")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("git {}: {e}", args.first().unwrap_or(&"")))
+}
+
+fn write_scaffold_contents(
+    target: &Path,
+    slug: &str,
+    template: ProjectTemplate,
+    notes: &str,
+) -> Result<(), String> {
+    let notes_trim = notes.trim();
+    let notes_section = if notes_trim.is_empty() {
+        String::new()
+    } else {
+        format!("\n{notes_trim}\n")
+    };
+
+    let readme = match template {
+        ProjectTemplate::Minimal => format!("# {slug}\n\nScaffolded by T-0.{notes_section}"),
+        ProjectTemplate::Agent => format!(
+            "# {slug}\n\nScaffolded by T-0. Thin agent-ready starter — your init agent will expand this.\n{notes_section}"
+        ),
+    };
+    fs::write(target.join("README.md"), readme).map_err(|e| format!("README: {e}"))?;
+    fs::write(target.join(".gitignore"), SCAFFOLD_GITIGNORE)
+        .map_err(|e| format!(".gitignore: {e}"))?;
+
+    if template == ProjectTemplate::Agent {
+        fs::create_dir_all(target.join("docs")).map_err(|e| format!("docs/: {e}"))?;
+        let agents = format!(
+            r#"# AGENTS.md
+
+Start with **[docs/INDEX.md](./docs/INDEX.md)**.
+
+## Project
+
+- **Name:** {slug}
+- **Scaffold:** T-0 agent template (run agent init / `/init` to complete bootstrap)
+
+## Code principles
+
+1. Production-complete or hard-fail
+2. Fail loud
+3. Small, focused diffs
+4. Evidence before claims
+"#
+        );
+        fs::write(target.join("AGENTS.md"), agents).map_err(|e| format!("AGENTS.md: {e}"))?;
+        let index = format!(
+            r#"# docs/INDEX.md
+
+Recovery map for **{slug}**.
+
+| Doc | Why |
+|-----|-----|
+| [../README.md](../README.md) | Project overview |
+| [../AGENTS.md](../AGENTS.md) | Agent instructions |
+
+Add architecture and workflow links as the project grows.
+"#
+        );
+        fs::write(target.join("docs/INDEX.md"), index)
+            .map_err(|e| format!("docs/INDEX.md: {e}"))?;
+    }
+
+    let path_str = target.display().to_string();
+    let init = git_silent(&["-C", &path_str, "init", "-b", "main"])?;
+    if !init.success() {
+        return Err("git init failed".into());
+    }
+    let _ = git_silent(&["-C", &path_str, "add", "-A"]);
+    // Commit may fail without user.email — scaffold still succeeds.
+    let _ = git_silent(&["-C", &path_str, "commit", "-m", "chore: scaffold from t0"]);
+    Ok(())
+}
+
+/// Create project dir + files + git. On any failure after mkdir, removes the target.
+pub fn create_scaffold(
+    parent: &Path,
+    slug: &str,
+    template: ProjectTemplate,
+    notes: &str,
+    display_path: &dyn Fn(&Path) -> String,
+) -> Result<PathBuf, String> {
+    if !git_available() {
+        return Err("git not found on PATH".into());
+    }
+    if !parent.is_dir() {
+        return Err("parent is not a directory".into());
+    }
+    let target = parent.join(slug);
+    if target.exists() {
+        return Err(format!("{} already exists", display_path(&target)));
+    }
+    fs::create_dir_all(&target).map_err(|e| format!("mkdir: {e}"))?;
+
+    if let Err(e) = write_scaffold_contents(&target, slug, template, notes) {
+        if let Err(cleanup) = fs::remove_dir_all(&target) {
+            return Err(format!(
+                "{e} (also failed to remove partial scaffold {}: {cleanup})",
+                display_path(&target)
+            ));
+        }
+        return Err(e);
+    }
+    Ok(target)
+}
+
+/// Display column width of `s` (Unicode-aware; control chars count as 0).
+pub fn display_width(s: &str) -> usize {
+    s.chars()
+        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+        .sum()
+}
+
+/// Pad/truncate to `width` **display** columns (Unicode-aware).
+/// Truncates from the **end** (front kept) — use [`sliding_tail`]
+/// when the cursor or leaf path must stay visible.
+pub fn pad_line(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut cols = 0usize;
+    for ch in s.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if cols + w > width {
+            break;
+        }
+        out.push(ch);
+        cols += w;
+    }
+    if cols < width {
+        out.push_str(&" ".repeat(width - cols));
+    }
+    out
+}
+
+/// Sliding tail window: keep the **end** of `s` within `width` display columns.
+/// When truncated, prefixes `…` so recent input / caret stay visible.
+pub fn sliding_tail(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_width(s) <= width {
+        return s.to_string();
+    }
+    // Single-column ellipsis when there is room; otherwise hard-clip the tail.
+    let ell = '…';
+    let ell_w = UnicodeWidthChar::width(ell).unwrap_or(1);
+    if width <= ell_w {
+        return String::from(ell);
+    }
+    let avail = width.saturating_sub(ell_w);
+    let mut rev: Vec<char> = Vec::new();
+    let mut cols = 0usize;
+    for ch in s.chars().rev() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if cols + w > avail {
+            break;
+        }
+        rev.push(ch);
+        cols += w;
+    }
+    rev.reverse();
+    let mut out = String::from(ell);
+    for ch in rev {
+        out.push(ch);
+    }
+    out
+}
+
+/// Keep the **start** of `s`, attach `…` when truncated, pad to `width` display columns.
+/// For names and branch labels (never spaced `"..."`).
+pub fn ellipsize_end(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_width(s) <= width {
+        return pad_line(s, width);
+    }
+    let ell = '…';
+    let ell_w = UnicodeWidthChar::width(ell).unwrap_or(1);
+    if width <= ell_w {
+        return pad_line(&String::from(ell), width);
+    }
+    let avail = width.saturating_sub(ell_w);
+    let mut out = String::new();
+    let mut cols = 0usize;
+    for ch in s.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if cols + w > avail {
+            break;
+        }
+        out.push(ch);
+        cols += w;
+    }
+    out.push(ell);
+    pad_line(&out, width)
+}
+
+/// Keep the **end/leaf** of `s`, prefix `…` when truncated, pad to `width` display columns.
+/// For paths where the leaf must stay visible.
+pub fn ellipsize_front(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_width(s) <= width {
+        return pad_line(s, width);
+    }
+    pad_line(&sliding_tail(s, width), width)
+}
+
+/// Logical lines of notes (always at least one empty line for empty string).
+pub fn notes_lines(notes: &str) -> Vec<&str> {
+    if notes.is_empty() {
+        return vec![""];
+    }
+    notes.split('\n').collect()
+}
+
+/// Keep scroll so the end of the text is visible when typing at the end.
+pub fn clamp_notes_scroll(notes: &str, scroll: u16) -> u16 {
+    let n = notes_lines(notes).len();
+    let max_scroll = n.saturating_sub(NOTES_VIEWPORT_ROWS as usize) as u16;
+    scroll.min(max_scroll)
+}
+
+pub fn auto_scroll_notes_to_end(notes: &str) -> u16 {
+    let n = notes_lines(notes).len();
+    n.saturating_sub(NOTES_VIEWPORT_ROWS as usize) as u16
+}
+
+/// Visible slice of notes for a 3-row viewport.
+pub fn notes_viewport(notes: &str, scroll: u16) -> Vec<String> {
+    let lines = notes_lines(notes);
+    let start = scroll as usize;
+    let mut out = Vec::with_capacity(NOTES_VIEWPORT_ROWS as usize);
+    for i in 0..NOTES_VIEWPORT_ROWS as usize {
+        let idx = start + i;
+        if idx < lines.len() {
+            out.push(lines[idx].to_string());
+        } else {
+            out.push(String::new());
+        }
+    }
+    out
+}
+
+pub fn delete_last_char(s: &mut String) {
+    s.pop();
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Option/Alt+Backspace: delete last word (macOS-style).
+/// Skips trailing whitespace on the current line, then deletes either a run of
+/// word chars (alnum/_) or a run of non-word non-space chars (e.g. `---`).
+pub fn delete_last_word(s: &mut String) {
+    // Drop trailing spaces/tabs on this line (not newlines).
+    while let Some(c) = s.chars().last() {
+        if c == ' ' || c == '\t' {
+            s.pop();
+        } else {
+            break;
+        }
+    }
+    let Some(last) = s.chars().last() else {
+        return;
+    };
+    // After Enter, last char is `\n` — remove that empty line (one keystroke).
+    if last == '\n' {
+        s.pop();
+        return;
+    }
+    if is_word_char(last) {
+        while let Some(c) = s.chars().last() {
+            if c == '\n' || !is_word_char(c) {
+                break;
+            }
+            s.pop();
+        }
+    } else {
+        // Punctuation / symbols cluster.
+        while let Some(c) = s.chars().last() {
+            if c == '\n' || c.is_whitespace() || is_word_char(c) {
+                break;
+            }
+            s.pop();
+        }
+    }
+    // Drop a single space/tab left between words ( "hello " after deleting "world").
+    if let Some(c) = s.chars().last() {
+        if c == ' ' || c == '\t' {
+            s.pop();
+        }
+    }
+}
+
+/// Cmd/Ctrl+U style: delete from last newline (or start) to end — current line.
+pub fn delete_current_line(s: &mut String) {
+    if let Some(pos) = s.rfind('\n') {
+        s.truncate(pos + 1); // keep the newline
+    } else {
+        s.clear();
+    }
+}
+
+pub fn env_flag_on(key: &str) -> bool {
+    match std::env::var(key) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugify_basic_and_edges() {
+        assert_eq!(slugify_project_name("Hello World").unwrap(), "hello-world");
+        assert_eq!(slugify_project_name("  foo_bar.baz  ").unwrap(), "foo-bar-baz");
+        assert_eq!(slugify_project_name("---").unwrap_err(), "name needs ascii letters/digits");
+        assert_eq!(slugify_project_name("").unwrap_err(), "name needs ascii letters/digits");
+        assert_eq!(slugify_project_name("MyApp").unwrap(), "myapp");
+        // Always a single path segment (no slashes survive filtering).
+        assert_eq!(slugify_project_name("a/b").unwrap(), "ab");
+    }
+
+    #[test]
+    fn pad_line_display_width() {
+        assert_eq!(pad_line("hi", 5), "hi   ");
+        assert_eq!(pad_line("hello", 3), "hel");
+        assert_eq!(pad_line("", 2), "  ");
+        assert_eq!(display_width(&pad_line("ab", 4)), 4);
+    }
+
+    #[test]
+    fn sliding_tail_keeps_end() {
+        assert_eq!(sliding_tail("abcdef", 10), "abcdef");
+        let t = sliding_tail("abcdefghij", 5);
+        assert!(t.starts_with('…'));
+        assert!(t.ends_with('j'));
+        assert_eq!(display_width(&t), 5);
+        // Caret at end stays visible.
+        let with_caret = sliding_tail("long-project-name-here▌", 8);
+        assert!(with_caret.ends_with('▌') || with_caret.contains('▌'));
+        assert_eq!(display_width(&with_caret), 8);
+    }
+
+    #[test]
+    fn sliding_tail_keeps_path_leaf() {
+        let p = sliding_tail("~/dev/mission-control/projects/my-app  ↵", 12);
+        assert!(p.contains("my-app") || p.ends_with('↵') || p.contains("app"));
+        assert_eq!(display_width(&p), 12);
+    }
+
+    #[test]
+    fn ellipsize_end_attaches_ellipsis() {
+        let t = ellipsize_end("pills-pr-02-agent-extra", 12);
+        assert!(t.contains('…'), "got {t:?}");
+        assert!(!t.contains("..."), "spaced/dot ellipsis forbidden: {t:?}");
+        assert_eq!(display_width(&t), 12);
+        assert!(t.starts_with("pills"));
+    }
+
+    #[test]
+    fn ellipsize_front_keeps_leaf() {
+        let t = ellipsize_front("~/dev/mission-control/my-app", 14);
+        assert!(t.contains('…') || t.contains("my-app"));
+        assert!(t.contains("my-app") || t.ends_with('p'));
+        assert_eq!(display_width(&t), 14);
+        assert!(!t.contains("..."));
+    }
+
+    #[test]
+    fn notes_scroll_and_viewport() {
+        let notes = "a\nb\nc\nd\ne";
+        assert_eq!(notes_lines(notes).len(), 5);
+        assert_eq!(auto_scroll_notes_to_end(notes), 2); // 5 - 3
+        assert_eq!(clamp_notes_scroll(notes, 99), 2);
+        assert_eq!(clamp_notes_scroll(notes, 0), 0);
+        let vp = notes_viewport(notes, 2);
+        assert_eq!(
+            vp,
+            vec!["c".to_string(), "d".to_string(), "e".to_string()]
+        );
+        assert_eq!(notes_lines("").len(), 1);
+        assert_eq!(auto_scroll_notes_to_end(""), 0);
+    }
+
+    #[test]
+    fn delete_last_word_and_line() {
+        let mut s = String::from("hello world");
+        delete_last_word(&mut s);
+        assert_eq!(s, "hello");
+
+        let mut s = String::from("hello   ");
+        delete_last_word(&mut s);
+        assert_eq!(s, "");
+
+        let mut s = String::from("foo-bar");
+        delete_last_word(&mut s);
+        assert_eq!(s, "foo-");
+
+        let mut s = String::from("foo-");
+        delete_last_word(&mut s);
+        assert_eq!(s, "foo");
+
+        let mut s = String::from("line1\nline2 words");
+        delete_last_word(&mut s);
+        assert_eq!(s, "line1\nline2");
+
+        // Opt+Backspace right after Enter removes the empty trailing line.
+        let mut s = String::from("hello\n");
+        delete_last_word(&mut s);
+        assert_eq!(s, "hello");
+
+        let mut s = String::from("line1\nline2");
+        delete_current_line(&mut s);
+        assert_eq!(s, "line1\n");
+
+        let mut s = String::from("only");
+        delete_current_line(&mut s);
+        assert_eq!(s, "");
+
+        let mut s = String::from("ab");
+        delete_last_char(&mut s);
+        assert_eq!(s, "a");
+    }
+
+    #[test]
+    fn elevated_autonomy_flags() {
+        assert!(InitAgentKind::Claude.elevated_autonomy());
+        assert!(InitAgentKind::Grok.elevated_autonomy());
+        assert!(!InitAgentKind::Codex.elevated_autonomy());
+        assert!(!InitAgentKind::Pi.elevated_autonomy());
+    }
+}
