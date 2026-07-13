@@ -363,7 +363,7 @@ pub fn display_width(s: &str) -> usize {
 }
 
 /// Pad/truncate to `width` **display** columns (Unicode-aware).
-/// Truncates from the **end** (front kept) — use [`sliding_tail`] / [`front_ellipsize`]
+/// Truncates from the **end** (front kept) — use [`sliding_tail`]
 /// when the cursor or leaf path must stay visible.
 pub fn pad_line(s: &str, width: usize) -> String {
     if width == 0 {
@@ -420,9 +420,6 @@ pub fn sliding_tail(s: &str, width: usize) -> String {
 }
 
 /// Front-ellipsize so the **leaf** (end) stays visible — for parent paths.
-pub fn front_ellipsize(s: &str, width: usize) -> String {
-    sliding_tail(s, width)
-}
 
 /// Logical lines of notes (always at least one empty line for empty string).
 pub fn notes_lines(notes: &str) -> Vec<&str> {
@@ -483,7 +480,9 @@ pub fn delete_last_word(s: &mut String) {
     let Some(last) = s.chars().last() else {
         return;
     };
+    // After Enter, last char is `\n` — remove that empty line (one keystroke).
     if last == '\n' {
+        s.pop();
         return;
     }
     if is_word_char(last) {
@@ -566,8 +565,8 @@ mod tests {
     }
 
     #[test]
-    fn front_ellipsize_keeps_leaf() {
-        let p = front_ellipsize("~/dev/mission-control/projects/my-app  ↵", 12);
+    fn sliding_tail_keeps_path_leaf() {
+        let p = sliding_tail("~/dev/mission-control/projects/my-app  ↵", 12);
         assert!(p.contains("my-app") || p.ends_with('↵') || p.contains("app"));
         assert_eq!(display_width(&p), 12);
     }
@@ -609,6 +608,11 @@ mod tests {
         let mut s = String::from("line1\nline2 words");
         delete_last_word(&mut s);
         assert_eq!(s, "line1\nline2");
+
+        // Opt+Backspace right after Enter removes the empty trailing line.
+        let mut s = String::from("hello\n");
+        delete_last_word(&mut s);
+        assert_eq!(s, "hello");
 
         let mut s = String::from("line1\nline2");
         delete_current_line(&mut s);

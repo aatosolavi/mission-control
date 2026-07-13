@@ -25,7 +25,7 @@ use crossterm::{
 use new_project::{
     auto_scroll_notes_to_end, build_init_command, clamp_notes_scroll, compose_init_prompt,
     create_scaffold, delete_current_line, delete_last_char, delete_last_word, display_width,
-    env_flag_on, front_ellipsize, notes_viewport, pad_line, sliding_tail, slugify_project_name,
+    env_flag_on, notes_viewport, pad_line, sliding_tail, slugify_project_name,
     InitAgentKind, InitCommand, InitPrompt, ProjectTemplate, NAME_MAX_CHARS, NOTES_MAX_CHARS,
     NOTES_VIEWPORT_ROWS,
 };
@@ -2136,7 +2136,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         }
                         KeyCode::Up => {
                             if app.new_project.field == NewProjectField::Notes {
-                                if app.new_project.notes_scroll > 0 {
+                                // Shift+Up always leaves Notes (no scroll gauntlet).
+                                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                    app.new_project.field = app.new_project.field.prev();
+                                } else if app.new_project.notes_scroll > 0 {
                                     app.new_project.notes_scroll -= 1;
                                 } else {
                                     app.new_project.field = app.new_project.field.prev();
@@ -3795,18 +3798,12 @@ fn init_agent_elevated(action: Action) -> bool {
         .unwrap_or(false)
 }
 
-fn field_row_style(
-    selected: bool,
-    dim_placeholder: bool,
-    t: &Theme,
-) -> Style {
+fn field_row_style(selected: bool, t: &Theme) -> Style {
     if selected {
         Style::default()
             .fg(ACCENT_ON)
             .bg(ACCENT)
             .add_modifier(Modifier::BOLD)
-    } else if dim_placeholder {
-        Style::default().fg(t.dim).bg(t.bg)
     } else {
         Style::default().fg(t.soft).bg(t.bg)
     }
@@ -3856,7 +3853,7 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             pad_line(
-                "tab · enter=newline · ctrl-enter create · opt/ctrl-bs word · ctrl-u line · esc",
+                "tab · enter=newline · create/ctrl-enter · shift-up leave notes · ctrl-w word · esc",
                 col_w,
             ),
             Style::default().fg(t.dim).bg(t.bg),
@@ -3902,7 +3899,7 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
     let mut top_lines = Vec::new();
     for (label, value, field) in top_rows {
         let selected = app.new_project.field == field;
-        let style = field_row_style(selected, false, &t);
+        let style = field_row_style(selected, &t);
         let marker = if selected { ">" } else { " " };
         let prefix = format!("{marker} {label:<11} ");
         let avail = field_w.saturating_sub(display_width(&prefix));
@@ -3917,7 +3914,8 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
                 sliding_tail(&with_caret, avail)
             }
             NewProjectField::Name => sliding_tail(&value, avail),
-            NewProjectField::Parent => front_ellipsize(&value, avail),
+            // Parent keeps the leaf visible (sliding_tail shows the end of the path).
+            NewProjectField::Parent => sliding_tail(&value, avail),
             _ => sliding_tail(&value, avail),
         };
         let raw = format!("{prefix}{value_out}");
@@ -3930,7 +3928,7 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
 
     // Notes label row
     let notes_selected = app.new_project.field == NewProjectField::Notes;
-    let notes_label_style = field_row_style(notes_selected, false, &t);
+    let notes_label_style = field_row_style(notes_selected, &t);
     let notes_marker = if notes_selected { ">" } else { " " };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -3986,7 +3984,7 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
 
     // Create row
     let create_selected = app.new_project.field == NewProjectField::Create;
-    let create_style = field_row_style(create_selected, false, &t);
+    let create_style = field_row_style(create_selected, &t);
     let create_marker = if create_selected { ">" } else { " " };
     let create_raw = format!("{create_marker} {:<11} {create_label}", "Create");
     frame.render_widget(
