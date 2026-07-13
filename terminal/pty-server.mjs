@@ -189,13 +189,14 @@ function readProcessCwd(pid, callback) {
 function startCwdTracking(session, ptyProcess) {
   let lastSaved = null;
   let polling = false;
-  let lastPolledDataAt = 0;
+  // -1 ⇒ never polled; allows one initial lsof even when lastDataAt is still 0.
+  let lastPolledDataAt = -1;
 
   const poll = () => {
-    // P5: no clients, or no PTY output since last poll → skip lsof (battery/CPU).
+    // P5: no clients, or no new PTY output since last poll → skip lsof (battery/CPU).
     if (session.clients.size === 0) return;
     const lastData = session.lastDataAt || 0;
-    if (lastData && lastData === lastPolledDataAt) return;
+    if (lastData === lastPolledDataAt) return;
     if (polling) return;
     polling = true;
     lastPolledDataAt = lastData;
