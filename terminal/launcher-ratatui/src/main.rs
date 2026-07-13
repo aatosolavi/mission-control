@@ -3838,7 +3838,8 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
         inner,
     );
 
-    // help 1 · Name/Parent/Template/Init 4 · Notes label 1 · notes box 3 · Create 1 · status 1
+    // Exactly the field rows — no vertical filler.
+    // help 1 · Name/Parent/Template/Init 4 · Notes label 1 · notes box N · Create 1 · status 1
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -3847,7 +3848,6 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
             Constraint::Length(1), // notes label
             Constraint::Length(NOTES_VIEWPORT_ROWS), // notes box
             Constraint::Length(1), // create
-            Constraint::Min(0),    // filler (opaque)
             Constraint::Length(1), // status
         ])
         .split(inner);
@@ -3998,15 +3998,7 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
         chunks[4],
     );
 
-    // Filler keeps opacity if popup is taller than content.
-    if chunks[5].height > 0 {
-        frame.render_widget(
-            Block::default().style(Style::default().bg(t.bg)),
-            chunks[5],
-        );
-    }
-
-    let status_w = chunks[6].width.max(1) as usize;
+    let status_w = chunks[5].width.max(1) as usize;
     let status_text = app.status.as_deref().unwrap_or(" ");
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -4014,29 +4006,29 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
             Style::default().fg(ACCENT).bg(t.bg),
         )))
         .style(Style::default().bg(t.bg)),
-        chunks[6],
+        chunks[5],
     );
 }
 
 fn new_project_popup_rect(screen: Rect) -> Rect {
-    // Prefer a roomy popup, but never force mins larger than the screen.
+    // Width: comfortable default, never larger than screen.
     let width = if screen.width >= 44 {
         screen.width.min(76).max(44)
     } else {
         screen.width.max(1)
     };
-    // Multi-line notes need ~12 content rows + chrome; keep compact (3 shorter than 18–22).
-    let preferred_h = screen.height.saturating_sub(2).min(19);
-    let height = if preferred_h >= 15 {
-        preferred_h
-    } else {
-        screen.height.max(1)
-    };
+    // Height = exact content rows + vertical inset (1+1) so border sits tight.
+    // help1 + fields4 + notes_label1 + notes_box N + create1 + status1
+    let content_rows: u16 = 1 + 4 + 1 + NOTES_VIEWPORT_ROWS + 1 + 1;
+    let inset_v: u16 = 2; // inset(area, 2, 1) → ±1 top/bottom
+    let height = content_rows
+        .saturating_add(inset_v)
+        .min(screen.height.max(1));
     Rect {
         x: screen.x + screen.width.saturating_sub(width) / 2,
         y: screen.y + screen.height.saturating_sub(height) / 2,
         width: width.min(screen.width.max(1)),
-        height: height.min(screen.height.max(1)),
+        height,
     }
 }
 
