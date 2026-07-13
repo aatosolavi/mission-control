@@ -2406,31 +2406,37 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 }
                             }
                         },
-                        KeyCode::Enter => match app.new_project.field {
-                            NewProjectField::Parent => {
-                                app.open_new_project_parent_picker();
+                        KeyCode::Enter => {
+                            // Shift+Enter in Notes = newline (chat-style). Plain Enter advances
+                            // or creates from Create. Ctrl+Enter still creates from any field.
+                            let shift = mods.contains(KeyModifiers::SHIFT);
+                            if shift
+                                && app.new_project.field == NewProjectField::Notes
+                                && app.new_project.notes.chars().count() < NOTES_MAX_CHARS
+                            {
+                                app.new_project.notes.push('\n');
+                                app.new_project.notes_scroll =
+                                    auto_scroll_notes_to_end(&app.new_project.notes);
+                                continue;
                             }
-                            NewProjectField::Template => {
-                                app.new_project.template = app.new_project.template.cycle();
-                            }
-                            NewProjectField::InitAgent => {
-                                app.cycle_new_project_init_agent(1);
-                            }
-                            NewProjectField::Name => {
-                                // Enter on Name advances — does not create.
-                                app.new_project.field = app.new_project.field.next();
-                            }
-                            NewProjectField::Notes => {
-                                // Enter inserts newline; create only from Create / Ctrl+Enter.
-                                if app.new_project.notes.chars().count() < NOTES_MAX_CHARS {
-                                    app.new_project.notes.push('\n');
-                                    app.new_project.notes_scroll =
-                                        auto_scroll_notes_to_end(&app.new_project.notes);
+                            match app.new_project.field {
+                                NewProjectField::Parent => {
+                                    app.open_new_project_parent_picker();
                                 }
-                            }
-                            NewProjectField::Create => {
-                                if let Err(err) = app.try_create_project() {
-                                    app.set_status(err);
+                                NewProjectField::Template => {
+                                    app.new_project.template = app.new_project.template.cycle();
+                                }
+                                NewProjectField::InitAgent => {
+                                    app.cycle_new_project_init_agent(1);
+                                }
+                                NewProjectField::Name | NewProjectField::Notes => {
+                                    // Enter advances to next field.
+                                    app.new_project.field = app.new_project.field.next();
+                                }
+                                NewProjectField::Create => {
+                                    if let Err(err) = app.try_create_project() {
+                                        app.set_status(err);
+                                    }
                                 }
                             }
                         },
@@ -4074,7 +4080,7 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             pad_line(
-                "tab · enter=newline · create/ctrl-enter · shift-up leave notes · ctrl-w word · esc",
+                "tab · shift-enter=newline · enter next · create/ctrl-enter · shift-up · esc",
                 col_w,
             ),
             Style::default().fg(t.dim).bg(t.bg),
