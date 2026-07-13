@@ -1365,7 +1365,10 @@ fn main() -> io::Result<()> {
 
         let backend = CrosstermBackend::new(stdout());
         let mut terminal = Terminal::new(backend)?;
-        terminal.clear()?;
+        // No terminal.clear() here: in ratatui 0.30 it queries cursor position
+        // (ESC[6n) and errors out after 2s if the reply is late — a browser
+        // client mid-history-replay answers late, crash-looping the launcher.
+        // Fullscreen draw repaints every cell anyway, so clear is redundant.
 
         // Cold start only: once per `mc` process, not when returning from an agent.
         if first_ui {
