@@ -3606,15 +3606,19 @@ fn build_init_command(action: Action, cwd: &Path, prompt: &str) -> Result<InitCo
         .ok_or_else(|| format!("no command for {}", action.label()))?;
     let cwd_str = cwd.display().to_string();
 
+    // Recipes from local --help + agent docs inventory (see PR notes).
+    // Always also set process cwd when spawning; flags reinforce session root.
     match action {
         Action::Grok => {
+            // -p/--single exits when done; full tools with always-approve.
             args.extend([
+                "-p".into(),
+                prompt.to_string(),
                 "--cwd".into(),
                 cwd_str,
                 "--always-approve".into(),
                 "--permission-mode".into(),
                 "acceptEdits".into(),
-                prompt.to_string(),
             ]);
         }
         Action::Codex => {
@@ -3642,11 +3646,14 @@ fn build_init_command(action: Action, cwd: &Path, prompt: &str) -> Result<InitCo
                 "--trust".into(),
                 "--workspace".into(),
                 cwd_str,
+                "--output-format".into(),
+                "text".into(),
                 prompt.to_string(),
             ]);
         }
         Action::Pi => {
-            args.extend(["-p".into(), "--approve".into(), prompt.to_string()]);
+            // No --cwd; process cwd only. -a trusts project-local resources.
+            args.extend(["-p".into(), "-a".into(), prompt.to_string()]);
         }
         Action::Amp => {
             args.extend(["-x".into(), prompt.to_string()]);
@@ -3660,12 +3667,13 @@ fn build_init_command(action: Action, cwd: &Path, prompt: &str) -> Result<InitCo
             ]);
         }
         Action::Droid => {
+            // Default exec is read-only; need --auto medium+ to write.
             args.extend([
                 "exec".into(),
                 "--cwd".into(),
                 cwd_str,
                 "--auto".into(),
-                "high".into(),
+                "medium".into(),
                 prompt.to_string(),
             ]);
         }
