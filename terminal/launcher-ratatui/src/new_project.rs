@@ -424,7 +424,46 @@ pub fn sliding_tail(s: &str, width: usize) -> String {
     out
 }
 
-/// Front-ellipsize so the **leaf** (end) stays visible — for parent paths.
+/// Keep the **start** of `s`, attach `…` when truncated, pad to `width` display columns.
+/// For names and branch labels (never spaced `"..."`).
+pub fn ellipsize_end(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_width(s) <= width {
+        return pad_line(s, width);
+    }
+    let ell = '…';
+    let ell_w = UnicodeWidthChar::width(ell).unwrap_or(1);
+    if width <= ell_w {
+        return pad_line(&String::from(ell), width);
+    }
+    let avail = width.saturating_sub(ell_w);
+    let mut out = String::new();
+    let mut cols = 0usize;
+    for ch in s.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if cols + w > avail {
+            break;
+        }
+        out.push(ch);
+        cols += w;
+    }
+    out.push(ell);
+    pad_line(&out, width)
+}
+
+/// Keep the **end/leaf** of `s`, prefix `…` when truncated, pad to `width` display columns.
+/// For paths where the leaf must stay visible.
+pub fn ellipsize_front(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_width(s) <= width {
+        return pad_line(s, width);
+    }
+    pad_line(&sliding_tail(s, width), width)
+}
 
 /// Logical lines of notes (always at least one empty line for empty string).
 pub fn notes_lines(notes: &str) -> Vec<&str> {
@@ -574,6 +613,24 @@ mod tests {
         let p = sliding_tail("~/dev/mission-control/projects/my-app  ↵", 12);
         assert!(p.contains("my-app") || p.ends_with('↵') || p.contains("app"));
         assert_eq!(display_width(&p), 12);
+    }
+
+    #[test]
+    fn ellipsize_end_attaches_ellipsis() {
+        let t = ellipsize_end("pills-pr-02-agent-extra", 12);
+        assert!(t.contains('…'), "got {t:?}");
+        assert!(!t.contains("..."), "spaced/dot ellipsis forbidden: {t:?}");
+        assert_eq!(display_width(&t), 12);
+        assert!(t.starts_with("pills"));
+    }
+
+    #[test]
+    fn ellipsize_front_keeps_leaf() {
+        let t = ellipsize_front("~/dev/mission-control/my-app", 14);
+        assert!(t.contains('…') || t.contains("my-app"));
+        assert!(t.contains("my-app") || t.ends_with('p'));
+        assert_eq!(display_width(&t), 14);
+        assert!(!t.contains("..."));
     }
 
     #[test]

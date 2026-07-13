@@ -1,6 +1,6 @@
 {
   "name": "t-0",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "T-0 — browser terminal + agent launcher (real local PTY in a tab)",
   "repository": {

@@ -224,13 +224,22 @@ function normalizeSessionId(value) {
 // P4: chunk list instead of string += (avoids quadratic copy near the 2MB cap).
 // Chunks are whole PTY writes — safer cut points than mid-ANSI byte offsets
 // (replaces the old trimHistoryForReplay heuristic).
+// Coalesce small writes (interactive echo is often 1 byte) so replay is not
+// tens of thousands of websocket frames; only front-drops matter for ANSI safety.
+const HISTORY_COALESCE_MAX = 4096;
+
 function appendHistory(session, data) {
   if (typeof data !== "string" || data.length === 0) return;
   if (!session.chunks) {
     session.chunks = [];
     session.bytes = 0;
   }
-  session.chunks.push(data);
+  const last = session.chunks[session.chunks.length - 1];
+  if (last != null && last.length < HISTORY_COALESCE_MAX) {
+    session.chunks[session.chunks.length - 1] = last + data;
+  } else {
+    session.chunks.push(data);
+  }
   session.bytes += data.length;
   while (session.bytes > SESSION_HISTORY_LIMIT && session.chunks.length > 1) {
     session.bytes -= session.chunks.shift().length;

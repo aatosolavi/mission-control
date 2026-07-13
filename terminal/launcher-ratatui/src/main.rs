@@ -25,9 +25,9 @@ use crossterm::{
 use new_project::{
     auto_scroll_notes_to_end, build_init_command, clamp_notes_scroll, compose_init_prompt,
     create_scaffold, delete_current_line, delete_last_char, delete_last_word, display_width,
-    env_flag_on, notes_viewport, pad_line, sliding_tail, slugify_project_name,
-    InitAgentKind, InitCommand, InitPrompt, ProjectTemplate, NAME_MAX_CHARS, NOTES_MAX_CHARS,
-    NOTES_VIEWPORT_ROWS,
+    ellipsize_end, ellipsize_front, env_flag_on, notes_viewport, pad_line, sliding_tail,
+    slugify_project_name, InitAgentKind, InitCommand, InitPrompt, ProjectTemplate, NAME_MAX_CHARS,
+    NOTES_MAX_CHARS, NOTES_VIEWPORT_ROWS,
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -53,8 +53,37 @@ const APP_TAGLINE: &str = "go for launch";
 const ACCENT: Color = Color::Rgb(249, 115, 22);
 /// Text on filled accent chips (dark enough for contrast on orange).
 const ACCENT_ON: Color = Color::Rgb(23, 23, 23);
-/// Dirty branch / amber metadata.
+/// Dirty branch / amber metadata (fallback; prefer Theme.warn).
 const AMBER: Color = Color::Rgb(180, 120, 0);
+
+/// Braille spinner frames for background jobs (~100 ms each).
+const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+
+/// Idle tips — lowest-priority status-line content (preempted by real flashes).
+const TIPS: &[&str] = &[
+    ". resumes your last session",
+    "space favorites a workspace",
+    "1-9 picks an agent without leaving the list",
+    "n creates a project · s opens settings",
+    "? shows the full keymap",
+    "type to filter by name or path",
+    "MC_DEMO=1 t0 — screenshot-friendly fake workspaces",
+    "hover a missing agent chip to install",
+    "theme: Settings → UI theme (auto / light / dark)",
+    "shift-enter adds a newline in New Project notes",
+];
+
+const TIP_ROTATE: Duration = Duration::from_secs(30);
+/// Typewriter + color-ramp frames for tip entry (~40 ms each while reveal > 0).
+const TIP_REVEAL_FRAMES: u8 = 8;
+/// Soft sparkle while a tip is revealing.
+const TIP_SPARKLE: &[char] = &['·', '✦', '✧', '⋆', '✦', '·'];
+/// Inner chrome: title + chips + filter + tip/status + keys. `panel_rect` adds borders (2).
+const PANEL_CHROME: u16 = 5;
+/// Minimum outer panel height (was 12 — too squat on tall terminals).
+const MIN_PANEL_HEIGHT: u16 = 22;
+/// Floor for list content rows so the picker has a bit of air under short lists.
+const MIN_LIST_ROWS: u16 = 14;
 
 #[derive(Clone)]
 struct Repo {
@@ -288,6 +317,10 @@ struct Theme {
     border: Color,
     /// Unselected agent chip / list row.
     soft: Color,
+    /// Selected row full-width fill (one step off bg).
+    surface: Color,
+    /// Git dirty / ahead — never share hue with ACCENT.
+    warn: Color,
 }
 
 impl Theme {
@@ -300,6 +333,8 @@ impl Theme {
             key: Color::White,
             border: Color::DarkGray,
             soft: Color::Gray,
+            surface: Color::Rgb(38, 38, 38), // #262626
+            warn: AMBER,
         }
     }
 
@@ -313,6 +348,8 @@ impl Theme {
             key: Color::Rgb(24, 24, 27),
             border: Color::Rgb(161, 161, 170),
             soft: Color::Rgb(63, 63, 70), // zinc-700
+            surface: Color::Rgb(236, 236, 236), // #ececec
+            warn: Color::Rgb(161, 98, 7),       // darker amber on light
         }
     }
 
@@ -612,6 +649,27 @@ struct UiHitboxes {
     actions: Vec<(u16, u16, Action)>,
     list_top: u16,
     list_height: u16,
+    /// Per visible list row: `Some(visible_repo_index)` or `None` for separators / empty.
+    list_rows: Vec<Option<usize>>,
+}
+
+/// Preemptible tips on the row above the keymap (motion budget).
+struct TipTicker {
+    idx: usize,
+    rotated_at: Instant,
+    /// 0 = settled; 1..=TIP_REVEAL_FRAMES = typewriter + color ramp in progress.
+    reveal: u8,
+}
+
+impl Default for TipTicker {
+    fn default() -> Self {
+        Self {
+            idx: 0,
+            rotated_at: Instant::now(),
+            // Animate the first tip in on cold start.
+            reveal: TIP_REVEAL_FRAMES,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -866,6 +924,7 @@ struct InstallUi {
     /// When set, bar lingers briefly then clears.
     finished_at: Option<Instant>,
     failed: bool,
+    started_at: Instant,
 }
 
 enum InstallEvent {
@@ -890,6 +949,7 @@ struct BgInitUi {
     message: String,
     finished_at: Option<Instant>,
     failed: bool,
+    started_at: Instant,
 }
 
 enum BgInitEvent {
@@ -931,6 +991,15 @@ struct App {
     /// Async git badges (paint rows first; fill in as inspect_git finishes).
     git_rx: Option<Receiver<(PathBuf, GitMeta)>>,
     git_pending: usize,
+    /// When the current git fan-out started — drop channel after timeout so a stuck
+    /// mount cannot pin the event loop at 40 ms forever.
+    git_started_at: Option<Instant>,
+    /// `?` keymap overlay on the picker.
+    help_open: bool,
+    /// Idle tips in the status line (preempted by real flashes).
+    tips: TipTicker,
+    /// Status flash color-ramp frames remaining (0 = settled).
+    status_reveal: u8,
 }
 
 /// Git snapshot for one workspace row (filled asynchronously).
@@ -949,6 +1018,11 @@ impl App {
         let paths: Vec<PathBuf> = candidates.iter().map(|(p, _)| p.clone()).collect();
         let repos = repos_from_candidates(candidates, &state);
         let (git_rx, git_pending) = spawn_git_metadata(paths);
+        let git_started_at = if git_pending > 0 {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let visible_repos = (0..repos.len()).collect();
         let default_action = state.default_action();
         let init_default = default_init_agent(&state.settings);
@@ -977,6 +1051,10 @@ impl App {
             esc_meta_armed_at: None,
             git_rx: Some(git_rx),
             git_pending,
+            git_started_at,
+            help_open: false,
+            tips: TipTicker::default(),
+            status_reveal: 0,
         };
         app.apply_agent_memory();
         app
@@ -991,9 +1069,21 @@ impl App {
         let (rx, n) = spawn_git_metadata(paths);
         self.git_rx = Some(rx);
         self.git_pending = n;
+        self.git_started_at = if n > 0 { Some(Instant::now()) } else { None };
     }
 
     fn poll_git_meta(&mut self) {
+        // Stuck mounts hold a tx clone forever; abandon after 10 s so poll stays 250 ms.
+        const GIT_META_TIMEOUT: Duration = Duration::from_secs(10);
+        if let Some(started) = self.git_started_at {
+            if started.elapsed() >= GIT_META_TIMEOUT && self.git_pending > 0 {
+                self.git_rx = None;
+                self.git_pending = 0;
+                self.git_started_at = None;
+                return;
+            }
+        }
+
         let Some(rx) = self.git_rx.as_ref() else {
             return;
         };
@@ -1011,12 +1101,14 @@ impl App {
                 Err(TryRecvError::Disconnected) => {
                     self.git_rx = None;
                     self.git_pending = 0;
+                    self.git_started_at = None;
                     break;
                 }
             }
         }
         if self.git_pending == 0 {
             self.git_rx = None;
+            self.git_started_at = None;
         }
     }
 
@@ -1161,14 +1253,14 @@ impl App {
         let init_agent = self.new_project.init_agent;
 
         let Some(action) = init_agent else {
-            self.set_status(format!("created {} · scaffold only", display_path(&target)));
+            self.set_status(format!("✦ created {} · scaffold only", slug));
             return Ok(());
         };
 
         if !action.is_available() {
             self.set_status(format!(
-                "created {} · {} not found — run init manually",
-                display_path(&target),
+                "✦ created {} · {} not found — run init manually",
+                slug,
                 action.label()
             ));
             return Ok(());
@@ -1228,9 +1320,10 @@ impl App {
             message: format!("starting {}…", action.label().to_ascii_lowercase()),
             finished_at: None,
             failed: false,
+            started_at: Instant::now(),
         });
         self.set_status(format!(
-            "created {project} · {} init in background…",
+            "✦ created {project} · {} init…",
             action.label()
         ));
 
@@ -1335,12 +1428,18 @@ impl App {
                         .map(|u| u.agent)
                         .unwrap_or(Action::Shell);
                     let msg = truncate_status_line(&summary, 72);
+                    let started_at = self
+                        .bg_init
+                        .as_ref()
+                        .map(|u| u.started_at)
+                        .unwrap_or_else(Instant::now);
                     self.bg_init = Some(BgInitUi {
                         agent,
                         project: project.clone(),
                         message: msg.clone(),
                         finished_at: Some(Instant::now()),
                         failed: !ok,
+                        started_at,
                     });
                     self.bg_init_rx = None;
                     if ok {
@@ -1401,6 +1500,7 @@ impl App {
             message: format!("installing {}…", action.label().to_ascii_lowercase()),
             finished_at: None,
             failed: false,
+            started_at: Instant::now(),
         });
         self.hover_missing = None;
 
@@ -1510,21 +1610,33 @@ impl App {
                     fraction,
                     message,
                 }) => {
+                    let started_at = self
+                        .install
+                        .as_ref()
+                        .map(|u| u.started_at)
+                        .unwrap_or_else(Instant::now);
                     self.install = Some(InstallUi {
                         action,
                         fraction,
                         message,
                         finished_at: None,
                         failed: false,
+                        started_at,
                     });
                 }
                 Ok(InstallEvent::Done { action }) => {
+                    let started_at = self
+                        .install
+                        .as_ref()
+                        .map(|u| u.started_at)
+                        .unwrap_or_else(Instant::now);
                     self.install = Some(InstallUi {
                         action,
                         fraction: 1.0,
                         message: format!("{} ready", action.label().to_ascii_lowercase()),
                         finished_at: Some(Instant::now()),
                         failed: false,
+                        started_at,
                     });
                     self.install_rx = None;
                     // Prefer the newly installed agent if still on that chip.
@@ -1534,6 +1646,11 @@ impl App {
                     break;
                 }
                 Ok(InstallEvent::Failed { action, error }) => {
+                    let started_at = self
+                        .install
+                        .as_ref()
+                        .map(|u| u.started_at)
+                        .unwrap_or_else(Instant::now);
                     self.install = Some(InstallUi {
                         action,
                         fraction: 1.0,
@@ -1544,6 +1661,7 @@ impl App {
                         ),
                         finished_at: Some(Instant::now()),
                         failed: true,
+                        started_at,
                     });
                     self.install_rx = None;
                     break;
@@ -1615,21 +1733,105 @@ impl App {
     fn set_status(&mut self, message: impl Into<String>) {
         self.status = Some(message.into());
         self.status_set_at = Some(Instant::now());
+        // 3-frame fake fade-in (dim→muted→text) at 40 ms poll.
+        self.status_reveal = 3;
     }
 
     fn clear_status(&mut self) {
         self.status = None;
         self.status_set_at = None;
+        self.status_reveal = 0;
     }
 
     /// Drop footer flashes after a few seconds so they don't stick forever.
     fn tick_status(&mut self) {
         const STATUS_TTL: Duration = Duration::from_millis(2500);
+        if self.status_reveal > 0 {
+            self.status_reveal -= 1;
+        }
         if let Some(set_at) = self.status_set_at {
             if set_at.elapsed() >= STATUS_TTL {
                 self.clear_status();
             }
         }
+    }
+
+    /// Tips: rotate every ~30 s when free; pause while a status flash or job is active.
+    fn tick_tips(&mut self) {
+        if self.status.is_some() || self.job_busy() {
+            return;
+        }
+        if self.tips.reveal > 0 {
+            self.tips.reveal -= 1;
+            return;
+        }
+        if self.tips.rotated_at.elapsed() >= TIP_ROTATE {
+            self.tips.idx = (self.tips.idx + 1) % TIPS.len();
+            self.tips.rotated_at = Instant::now();
+            self.tips.reveal = TIP_REVEAL_FRAMES;
+        }
+    }
+
+    fn job_busy(&self) -> bool {
+        self.install.is_some() || self.bg_init.is_some()
+    }
+
+    /// Color ramp into ACCENT (dim → muted → orange) while revealing.
+    fn tip_style(&self, t: Theme) -> Style {
+        match self.tips.reveal {
+            6..=8 => Style::default().fg(t.dim),
+            3..=5 => Style::default().fg(t.muted),
+            1..=2 => Style::default().fg(ACCENT).add_modifier(Modifier::DIM),
+            _ => Style::default().fg(ACCENT),
+        }
+    }
+
+    fn tip_sparkle(&self) -> char {
+        if self.tips.reveal == 0 {
+            return '✦';
+        }
+        let i = (self.tips.rotated_at.elapsed().as_millis() as usize / 40) % TIP_SPARKLE.len();
+        TIP_SPARKLE[i]
+    }
+
+    /// Progressive reveal of tip text (typewriter) during the entrance ramp.
+    fn tip_visible_text(&self, tip: &str) -> String {
+        if self.tips.reveal == 0 {
+            return tip.to_string();
+        }
+        let chars: Vec<char> = tip.chars().collect();
+        if chars.is_empty() {
+            return String::new();
+        }
+        // reveal 8 → ~12% shown … reveal 1 → ~88% shown
+        let progress = 1.0 - (self.tips.reveal as f32 / f32::from(TIP_REVEAL_FRAMES));
+        let n = ((chars.len() as f32) * progress).ceil() as usize;
+        chars.into_iter().take(n.clamp(1, tip.chars().count())).collect()
+    }
+
+    fn status_style(&self, t: Theme) -> Style {
+        match self.status_reveal {
+            3 => Style::default().fg(t.dim),
+            2 => Style::default().fg(t.muted),
+            1 | 0 => Style::default().fg(ACCENT),
+            _ => Style::default().fg(ACCENT),
+        }
+    }
+
+    /// One-frame brand paint before exec (zero added latency).
+    fn paint_liftoff(&mut self, launch: &Launch) {
+        let name = launch
+            .cwd
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| display_path(&launch.cwd));
+        self.status = Some(format!(
+            "T-0 · liftoff → {} @ {}",
+            launch.action.label(),
+            name
+        ));
+        self.status_set_at = Some(Instant::now());
+        self.status_reveal = 0; // full strength for the last frame
     }
 
     fn selected_repo(&self) -> Option<&Repo> {
@@ -1914,7 +2116,7 @@ fn main() -> io::Result<()> {
         if first_ui {
             first_ui = false;
             if splash_enabled() {
-                let _ = run_splash(&mut terminal);
+                let _ = run_splash(&mut terminal, app.theme());
             }
         }
 
@@ -2062,11 +2264,12 @@ impl Splash {
 
 fn run_splash(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    theme: Theme,
 ) -> io::Result<()> {
     let splash = Splash::new();
 
     loop {
-        terminal.draw(|frame| draw_splash(frame, &splash))?;
+        terminal.draw(|frame| draw_splash(frame, &splash, theme))?;
 
         if splash.done() {
             return Ok(());
@@ -2085,12 +2288,20 @@ fn run_splash(
     }
 }
 
-fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
-    let area = centered_rect(frame.area());
+fn draw_splash(frame: &mut Frame<'_>, splash: &Splash, t: Theme) {
+    // Same full-terminal paint as the picker so light/dark match (no bare ANSI default).
+    frame.render_widget(
+        Block::default().style(Style::default().bg(t.bg).fg(t.text)),
+        frame.area(),
+    );
+
+    // Match main panel minimum silhouette (taller + themed).
+    let area = panel_rect(frame.area(), PANEL_CHROME.saturating_add(MIN_LIST_ROWS));
     let block = Block::default()
         .title(format!(" {APP_NAME} "))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(t.border))
+        .style(Style::default().bg(t.bg).fg(t.text));
     frame.render_widget(block, area);
 
     let inner = inset(area, 2, 1);
@@ -2115,6 +2326,7 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
             APP_NAME,
             Style::default()
                 .fg(ACCENT)
+                .bg(t.bg)
                 .add_modifier(Modifier::BOLD),
         )))
         .alignment(ratatui::layout::Alignment::Center);
@@ -2124,7 +2336,7 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
     if elapsed >= SPLASH_TAGLINE_MS {
         let tagline = Paragraph::new(Line::from(Span::styled(
             APP_TAGLINE,
-            Style::default().fg(Color::Gray),
+            Style::default().fg(t.muted).bg(t.bg),
         )))
         .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(tagline, chunks[2]);
@@ -2139,7 +2351,7 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
         let rule = "─".repeat(len);
         let rule_widget = Paragraph::new(Line::from(Span::styled(
             rule,
-            Style::default().fg(ACCENT),
+            Style::default().fg(ACCENT).bg(t.bg),
         )))
         .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(rule_widget, chunks[3]);
@@ -2147,7 +2359,7 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
 
     let skip = Paragraph::new(Line::from(Span::styled(
         "any key skip",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(t.dim).bg(t.bg),
     )))
     .alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(skip, chunks[6]);
@@ -2155,7 +2367,12 @@ fn draw_splash(frame: &mut Frame<'_>, splash: &Splash) {
 
 fn draw_app_frame(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     terminal.draw(|frame| match app.screen {
-        Screen::Picker => draw(frame, app),
+        Screen::Picker => {
+            draw(frame, app);
+            if app.help_open {
+                draw_help_overlay(frame, app);
+            }
+        }
         Screen::Settings => draw_settings(frame, app),
         Screen::FolderPicker => draw_folder_picker(frame, app),
         // Popup over the picker — not a separate full-screen UI.
@@ -2171,18 +2388,31 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
 ) -> io::Result<Option<Launch>> {
+    // Re-discover after returning from an agent (App lives across run_app entries).
+    // Async git fan-out — paint is not blocked. Keep selection when the path still exists.
+    if let Some(path) = app.selected_repo().map(|r| r.path.clone()) {
+        app.rebuild_repos_preserving_selection(&path);
+    } else {
+        app.refresh_repos();
+    }
+    app.help_open = false;
+
     // Initial paint before first input (async git badges fill in on later frames).
     draw_app_frame(terminal, app)?;
 
     loop {
         app.tick_status();
+        app.tick_tips();
         app.poll_install();
         app.poll_bg_init();
         app.poll_git_meta();
         app.tick_hover_install();
 
-        // Faster poll while bars/status/git meta/esc-meta are active.
+        // Faster poll while bars/status/reveal/git meta/esc-meta are active.
+        // Idle tips use 250 ms — never 40 ms for 30 s decoration.
         let poll_ms = if app.status.is_some()
+            || app.status_reveal > 0
+            || app.tips.reveal > 0
             || app.install.is_some()
             || app.bg_init.is_some()
             || app.git_pending > 0
@@ -2194,10 +2424,28 @@ fn run_app(
         };
 
         // P1: drain all pending input, then draw once (paste / mouse motion).
+        // Poll-before-read (after the first event) so `continue` in match arms is safe
+        // and does not re-block on `event::read` skipping the draw.
         if event::poll(Duration::from_millis(poll_ms))? {
+            let mut first = true;
             loop {
+                if !first && !event::poll(Duration::ZERO)? {
+                    break;
+                }
+                first = false;
                 match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
+                // Help overlay intercepts keys on the picker.
+                if app.help_open && app.screen == Screen::Picker {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('?') => {
+                            app.help_open = false;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 if app.screen == Screen::FolderPicker {
                     match key.code {
                         KeyCode::Esc => {
@@ -2547,6 +2795,8 @@ fn run_app(
                     }
                     if let Some(launch) = app.selected_launch() {
                         app.prepare_launch(&launch);
+                        app.paint_liftoff(&launch);
+                        draw_app_frame(terminal, app)?;
                         return Ok(Some(launch));
                     }
                 }
@@ -2570,11 +2820,17 @@ fn run_app(
                     app.clear_status();
                     if let Some(launch) = app.state.continue_last() {
                         app.prepare_launch(&launch);
+                        app.paint_liftoff(&launch);
+                        draw_app_frame(terminal, app)?;
                         return Ok(Some(launch));
                     }
                     app.set_status("no last session — open something with enter first");
                 }
+                KeyCode::Char('?') if app.filter.is_empty() => {
+                    app.help_open = true;
+                }
                 KeyCode::Char('s') | KeyCode::Char('S') if app.filter.is_empty() => {
+                    app.help_open = false;
                     app.screen = Screen::Settings;
                     app.settings_selected = 0;
                     app.clear_status();
@@ -2653,6 +2909,40 @@ fn run_app(
                 }
                 _ => {}
             },
+            Event::Mouse(mouse) if app.screen == Screen::Settings => match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    app.settings_selected = (app.settings_selected + 1)
+                        .min(App::settings_item_count().saturating_sub(1));
+                }
+                MouseEventKind::ScrollUp => {
+                    app.settings_selected = app.settings_selected.saturating_sub(1);
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    // Match draw_settings: panel_rect → inset(2,1) → help @ inner.y,
+                    // 6 option rows start at inner.y + 1.
+                    let panel = app.panel_area;
+                    if panel.width > 0 && panel.height > 0 {
+                        let inner = inset(panel, 2, 1);
+                        let options_top = inner.y.saturating_add(1);
+                        if mouse.row >= options_top
+                            && mouse.column >= inner.x
+                            && mouse.column < inner.x.saturating_add(inner.width)
+                        {
+                            let row = usize::from(mouse.row - options_top);
+                            let n = App::settings_item_count();
+                            if row < n {
+                                if row == app.settings_selected {
+                                    // Second click = Enter / →
+                                    app.nudge_settings_item(1);
+                                } else {
+                                    app.settings_selected = row;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
             Event::Mouse(mouse) if app.screen == Screen::Picker => match mouse.kind {
                 MouseEventKind::ScrollDown => app.select_next_repo(),
                 MouseEventKind::ScrollUp => app.select_previous_repo(),
@@ -2680,9 +2970,14 @@ fn run_app(
 
                     let list_bottom = app.hitboxes.list_top + app.hitboxes.list_height;
                     if mouse.row >= app.hitboxes.list_top && mouse.row < list_bottom {
-                        let clicked_visible =
-                            app.offset + usize::from(mouse.row - app.hitboxes.list_top);
-                        if clicked_visible < app.visible_repos.len() {
+                        let row = usize::from(mouse.row - app.hitboxes.list_top);
+                        let clicked = app
+                            .hitboxes
+                            .list_rows
+                            .get(row)
+                            .copied()
+                            .flatten();
+                        if let Some(clicked_visible) = clicked {
                             if clicked_visible == app.selected_visible {
                                 if app.selected_action != Action::Shell
                                     && !app.selected_action.is_available()
@@ -2690,6 +2985,8 @@ fn run_app(
                                     app.start_install(app.selected_action);
                                 } else if let Some(launch) = app.selected_launch() {
                                     app.prepare_launch(&launch);
+                                    app.paint_liftoff(&launch);
+                                    draw_app_frame(terminal, app)?;
                                     return Ok(Some(launch));
                                 }
                             }
@@ -2707,10 +3004,6 @@ fn run_app(
                 }
             }
             _ => {}
-                }
-                // Drain the rest of the burst without redrawing per event.
-                if !event::poll(Duration::ZERO)? {
-                    break;
                 }
             }
         } else {
@@ -2738,7 +3031,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         frame.area(),
     );
 
-    let area = centered_rect(frame.area());
+    let area = picker_panel_rect(frame.area(), app);
     app.panel_area = area;
     let block = Block::default()
         .title(format!(" {APP_NAME} "))
@@ -2751,11 +3044,12 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(1), // title
+            Constraint::Length(1), // chips
+            Constraint::Length(1), // filter
+            Constraint::Min(2),    // list
+            Constraint::Length(1), // tip / status (live, colored)
+            Constraint::Length(1), // keys (always visible)
         ])
         .split(inner);
 
@@ -2775,41 +3069,82 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
     draw_filter(frame, app, chunks[2], t);
     draw_repos(frame, app, chunks[3], t);
 
-    // While New Project popup is open, status lives only in the modal — not the main footer.
-    let footer_second = if app.screen == Screen::NewProject {
+    // Live row above keys: status flash wins, else animated tip (New Project keeps flashes in modal).
+    let tip_w = chunks[4].width as usize;
+    let tip_line = if app.screen == Screen::NewProject {
         Line::from(Span::styled(
-            "n new · e editor · f finder · c copy · g github · hover dim app to install",
+            pad_line("", tip_w),
             Style::default().fg(t.dim),
         ))
     } else if let Some(status) = &app.status {
-        Line::from(Span::styled(status.clone(), Style::default().fg(ACCENT)))
-    } else {
         Line::from(Span::styled(
-            "n new · e editor · f finder · c copy · g github · hover dim app to install",
-            Style::default().fg(t.dim),
+            pad_line(status, tip_w),
+            app.status_style(t),
         ))
+    } else {
+        let tip = TIPS[app.tips.idx % TIPS.len()];
+        let body = app.tip_visible_text(tip);
+        let spark = app.tip_sparkle();
+        let styled = app.tip_style(t);
+        let raw = format!("{spark} {body}");
+        // Soft caret while typewriting.
+        let with_caret = if app.tips.reveal > 0 {
+            format!("{raw}▌")
+        } else {
+            raw
+        };
+        Line::from(Span::styled(pad_line(&with_caret, tip_w), styled))
     };
-    let footer = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("enter", Style::default().fg(t.key)),
-            Span::styled(" open  ", Style::default().fg(t.dim)),
-            Span::styled(".", Style::default().fg(t.key)),
-            Span::styled(" resume  ", Style::default().fg(t.dim)),
-            Span::styled("space", Style::default().fg(t.key)),
-            Span::styled(" fav  ", Style::default().fg(t.dim)),
-            Span::styled("1-9", Style::default().fg(t.key)),
-            Span::styled(" app  ", Style::default().fg(t.dim)),
-            Span::styled("s", Style::default().fg(t.key)),
-            Span::styled(" settings  ", Style::default().fg(t.dim)),
-            Span::styled("type", Style::default().fg(t.key)),
-            Span::styled(" filter", Style::default().fg(t.dim)),
-        ]),
-        footer_second,
+    frame.render_widget(Paragraph::new(tip_line), chunks[4]);
+
+    // Stable keymap — always the same line; keys in key color, verbs dim.
+    let keys = Line::from(vec![
+        Span::styled("enter", Style::default().fg(t.key)),
+        Span::styled(" open  ", Style::default().fg(t.dim)),
+        Span::styled(".", Style::default().fg(t.key)),
+        Span::styled(" resume  ", Style::default().fg(t.dim)),
+        Span::styled("space", Style::default().fg(t.key)),
+        Span::styled(" ★  ", Style::default().fg(t.dim)),
+        Span::styled("1-9", Style::default().fg(t.key)),
+        Span::styled(" agent  ", Style::default().fg(t.dim)),
+        Span::styled("n", Style::default().fg(t.key)),
+        Span::styled(" new  ", Style::default().fg(t.dim)),
+        Span::styled("s", Style::default().fg(t.key)),
+        Span::styled(" settings  ", Style::default().fg(t.dim)),
+        Span::styled("?", Style::default().fg(t.key)),
+        Span::styled(" help", Style::default().fg(t.dim)),
     ]);
-    frame.render_widget(footer, chunks[4]);
+    frame.render_widget(Paragraph::new(keys), chunks[5]);
 
     draw_install_bar(frame, app, t);
     draw_bg_init_bar(frame, app, t);
+}
+
+/// Visual list rows including section separators (for panel sizing).
+fn picker_list_content_rows(app: &App) -> u16 {
+    let n = app.visible_repos.len();
+    if n == 0 {
+        return MIN_LIST_ROWS; // empty-state still gets a tall-enough list region
+    }
+    if !app.filter.is_empty() {
+        return (n as u16).max(MIN_LIST_ROWS);
+    }
+    let mut seps = 0u16;
+    let mut prev: Option<&str> = None;
+    for &idx in &app.visible_repos {
+        let badge = app.repos[idx].badge;
+        if prev != Some(badge) {
+            seps += 1;
+            prev = Some(badge);
+        }
+    }
+    (n as u16).saturating_add(seps).max(MIN_LIST_ROWS)
+}
+
+/// Shared outer rect for picker, settings, and folder browser — same silhouette.
+fn picker_panel_rect(screen: Rect, app: &App) -> Rect {
+    let list_rows = picker_list_content_rows(app);
+    panel_rect(screen, PANEL_CHROME.saturating_add(list_rows))
 }
 
 fn panel_bar_area(frame: &Frame<'_>, app: &App, row_offset: u16) -> Option<Rect> {
@@ -2831,6 +3166,11 @@ fn panel_bar_area(frame: &Frame<'_>, app: &App, row_offset: u16) -> Option<Rect>
     Some(bar_area)
 }
 
+fn spinner_frame(started: Instant) -> char {
+    let ms = started.elapsed().as_millis() as usize;
+    SPINNER[(ms / 100) % SPINNER.len()]
+}
+
 fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
     let Some(ui) = &app.install else {
         return;
@@ -2842,12 +3182,18 @@ fn draw_install_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
 
     let label = ui.action.label().to_ascii_lowercase();
     let pct = (ui.fraction * 100.0).round() as u16;
+    let spinning = ui.finished_at.is_none() && !ui.failed;
+    let spin = if spinning {
+        format!("{} ", spinner_frame(ui.started_at))
+    } else {
+        String::new()
+    };
     let head = if ui.failed {
         format!("install {label} failed")
     } else if ui.finished_at.is_some() {
         format!("install {label} done")
     } else {
-        format!("installing {label}  {pct}%")
+        format!("{spin}installing {label}  {pct}%")
     };
     let msg = truncate_status_line(&ui.message, bar_area.width as usize);
 
@@ -2907,12 +3253,18 @@ fn draw_bg_init_bar(frame: &mut Frame<'_>, app: &App, t: Theme) {
     };
 
     let agent = ui.agent.label().to_ascii_lowercase();
+    let spinning = ui.finished_at.is_none() && !ui.failed;
+    let spin = if spinning {
+        format!("{} ", spinner_frame(ui.started_at))
+    } else {
+        String::new()
+    };
     let head = if ui.failed {
         format!("init {agent} failed · {}", ui.project)
     } else if ui.finished_at.is_some() {
         format!("init {agent} done · {}", ui.project)
     } else {
-        format!("init {agent}… · {}", ui.project)
+        format!("{spin}init {agent}… · {}", ui.project)
     };
     let color = if ui.failed {
         Color::Red
@@ -2991,7 +3343,9 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
         frame.area(),
     );
 
-    let area = centered_rect(frame.area());
+    // Same outer size as the main picker so screens share one silhouette.
+    let area = picker_panel_rect(frame.area(), app);
+    app.panel_area = area;
     let block = Block::default()
         .title(format!(" {APP_NAME} · Settings "))
         .borders(Borders::ALL)
@@ -3005,7 +3359,6 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
         .constraints([
             Constraint::Length(1), // help
             Constraint::Min(4),    // options
-            Constraint::Length(1), // spacer — pushes status one row lower
             Constraint::Length(1), // status
         ])
         .split(inner);
@@ -3051,33 +3404,43 @@ fn draw_settings(frame: &mut Frame<'_>, app: &mut App) {
     ];
 
     let mut lines = Vec::new();
+    let w = chunks[1].width as usize;
     for (i, row) in rows.iter().enumerate() {
         let selected = i == app.settings_selected;
+        let row_bg = if selected { t.surface } else { t.bg };
         let style = if selected {
             Style::default()
-                .fg(ACCENT_ON)
-                .bg(ACCENT)
+                .fg(t.text)
+                .bg(row_bg)
                 .add_modifier(Modifier::BOLD)
         } else if i >= 5 {
-            // state dir is read-only
-            Style::default().fg(t.dim)
+            Style::default().fg(t.dim).bg(row_bg)
         } else {
-            Style::default().fg(t.soft)
+            Style::default().fg(t.soft).bg(row_bg)
         };
-        let marker = if selected { ">" } else { " " };
-        lines.push(Line::from(Span::styled(format!("{marker} {row}"), style)));
+        let mut spans = vec![
+            if selected {
+                Span::styled("▌", Style::default().fg(ACCENT).bg(row_bg))
+            } else {
+                Span::styled(" ", Style::default().bg(row_bg))
+            },
+            Span::styled(format!(" {row}"), style),
+        ];
+        let used: usize = spans.iter().map(|s| display_width(s.content.as_ref())).sum();
+        if used < w {
+            spans.push(Span::styled(" ".repeat(w - used), Style::default().bg(row_bg)));
+        }
+        lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines), chunks[1]);
-    // chunks[2] = empty spacer
 
-    // Status one row lower than the option list.
     if let Some(status) = &app.status {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 status.clone(),
                 Style::default().fg(ACCENT),
             ))),
-            chunks[3],
+            chunks[2],
         );
     }
 }
@@ -3089,8 +3452,8 @@ fn draw_folder_picker(frame: &mut Frame<'_>, app: &mut App) {
         frame.area(),
     );
 
-    // Same outer size as the main picker / settings panel; list scrolls inside.
-    let area = centered_rect(frame.area());
+    // Same outer size as the main picker; directory list scrolls inside.
+    let area = picker_panel_rect(frame.area(), app);
     app.panel_area = area;
 
     let title_path = display_path(app.folder.current_path());
@@ -3292,120 +3655,382 @@ fn draw_actions(frame: &mut Frame<'_>, app: &mut App, area: Rect, t: Theme) {
 }
 
 fn draw_filter(frame: &mut Frame<'_>, app: &App, area: Rect, t: Theme) {
-    let value = if app.filter.is_empty() {
-        "type to filter".to_string()
+    let w = area.width as usize;
+    if app.filter.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                pad_line("/ type to filter", w),
+                Style::default().fg(t.dim),
+            ))),
+            area,
+        );
+        return;
+    }
+
+    let count = format!("{}/{}", app.visible_repos.len(), app.repos.len());
+    let count_w = display_width(&count);
+    // "/" + query + "▌" + gap + count
+    let caret = '▌';
+    let prefix = format!("/{}{}", app.filter, caret);
+    let avail = w.saturating_sub(count_w.saturating_add(1));
+    let left = if display_width(&prefix) <= avail {
+        pad_line(&prefix, avail)
     } else {
-        app.filter.clone()
+        // Keep end of query + caret visible.
+        sliding_tail(&prefix, avail)
     };
-    let style = if app.filter.is_empty() {
-        Style::default().fg(t.dim)
-    } else {
-        Style::default().fg(ACCENT)
-    };
+    let gap = " ".repeat(w.saturating_sub(display_width(&left).saturating_add(count_w)).max(0));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("/", Style::default().fg(t.dim)),
-            Span::styled(value, style),
+            Span::styled(left, Style::default().fg(t.text)),
+            Span::raw(gap),
+            Span::styled(count, Style::default().fg(t.dim)),
         ])),
         area,
     );
 }
 
+/// Column widths for one list frame (two-space gutters).
+struct ColWidths {
+    name: usize,
+    branch: usize,
+    agent: usize,
+    path: usize,
+}
+
+fn compute_columns(area_width: u16) -> ColWidths {
+    // sel(2) + name + 2 + branch(14) + 2 + agent(7) + 2 + path
+    const FIXED: usize = 2 + 2 + 14 + 2 + 7 + 2;
+    let w = area_width as usize;
+    let name = 18usize;
+    let path = w.saturating_sub(FIXED + name).max(8);
+    ColWidths {
+        name,
+        branch: 14,
+        agent: 7,
+        path,
+    }
+}
+
+fn section_label(badge: &str, root_display: &str) -> String {
+    match badge {
+        "★" => "─ ★ favorites".into(),
+        "recent" => "─ recent".into(),
+        "last" => "─ last".into(),
+        "root" => "─ root".into(),
+        _ => format!("─ {root_display}"),
+    }
+}
+
 fn draw_repos(frame: &mut Frame<'_>, app: &mut App, area: Rect, t: Theme) {
     app.hitboxes.list_top = area.y;
     app.hitboxes.list_height = area.height;
+    app.hitboxes.list_rows.clear();
     app.keep_selected_visible();
 
     let visible_rows = area.height as usize;
-    let mut lines = Vec::new();
+    let cols = compute_columns(area.width);
+    let root_disp = display_path(&workspace_root(&app.state.settings));
+    let filtering = !app.filter.is_empty();
+    let mut lines: Vec<Line> = Vec::new();
 
-    for (visible_index, repo_index) in app
-        .visible_repos
-        .iter()
-        .enumerate()
-        .skip(app.offset)
-        .take(visible_rows)
-    {
-        let repo = &app.repos[*repo_index];
-        let selected = visible_index == app.selected_visible;
-        let marker = if selected { ">" } else { " " };
-        let style = if selected {
-            Style::default()
-                .fg(t.text)
-                .add_modifier(Modifier::BOLD)
+    // Empty states.
+    if app.visible_repos.is_empty() {
+        let (l1, l2) = if filtering {
+            (
+                "no matches".to_string(),
+                "esc to clear".to_string(),
+            )
         } else {
-            Style::default().fg(t.soft)
+            (
+                format!("no git repos under {root_disp}"),
+                "n creates one · s changes root".to_string(),
+            )
         };
-
-        let badge_style = if repo.badge == "★" {
-            Style::default().fg(ACCENT)
-        } else {
-            Style::default().fg(t.dim)
-        };
-
-        // Layout: > name  branch*  agent  path  badge
-        let mut spans = vec![
-            Span::styled(format!("{marker} "), Style::default().fg(ACCENT)),
-            Span::styled(pad_or_trim(&repo.name, 18), style),
-            Span::raw(" "),
-        ];
-
-        if let Some(branch) = &repo.git_branch {
-            let mut branch_label = branch.clone();
-            if repo.git_dirty {
-                branch_label.push('*');
-            }
-            if repo.git_ahead > 0 {
-                branch_label.push_str(&format!("↑{}", repo.git_ahead));
-            }
-            let branch_style = if repo.git_dirty {
-                Style::default().fg(AMBER)
-            } else {
-                Style::default().fg(t.dim)
-            };
-            spans.push(Span::styled(pad_or_trim(&branch_label, 14), branch_style));
-        } else {
-            spans.push(Span::styled(pad_or_trim("", 14), Style::default()));
+        let pad = visible_rows.saturating_sub(2) / 2;
+        for _ in 0..pad {
+            lines.push(Line::from(""));
+            app.hitboxes.list_rows.push(None);
         }
-
-        spans.push(Span::raw(" "));
-        if let Some(action) = repo.remembered_agent {
-            spans.push(Span::styled(
-                pad_or_trim(action.label(), 7),
-                Style::default().fg(ACCENT),
-            ));
-        } else {
-            spans.push(Span::styled(pad_or_trim("", 7), Style::default()));
-        }
-
-        spans.push(Span::raw(" "));
-        let path_width = area.width.saturating_sub(50) as usize;
-        spans.push(Span::styled(
-            pad_or_trim(&display_path(&repo.path), path_width),
-            Style::default().fg(t.dim),
-        ));
-        spans.push(Span::styled(repo.badge, badge_style));
-
-        lines.push(Line::from(spans));
-    }
-
-    if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No workspaces match this filter",
+            pad_line(&l1, area.width as usize),
             Style::default().fg(t.dim),
         )));
+        app.hitboxes.list_rows.push(None);
+        lines.push(Line::from(Span::styled(
+            pad_line(&l2, area.width as usize),
+            Style::default().fg(t.dim),
+        )));
+        app.hitboxes.list_rows.push(None);
+        frame.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+
+    let show_up = app.offset > 0;
+    let mut repo_i = app.offset;
+    let mut prev_badge: Option<&str> = if repo_i > 0 {
+        Some(app.repos[app.visible_repos[repo_i - 1]].badge)
+    } else {
+        None
+    };
+
+    while lines.len() < visible_rows && repo_i < app.visible_repos.len() {
+        let vis_idx = repo_i;
+        let repo = &app.repos[app.visible_repos[vis_idx]];
+
+        // Section separator when group changes (unfiltered only).
+        if !filtering && prev_badge != Some(repo.badge) {
+            if lines.len() >= visible_rows {
+                break;
+            }
+            let label = section_label(repo.badge, &root_disp);
+            lines.push(Line::from(Span::styled(
+                pad_line(&label, area.width as usize),
+                Style::default().fg(t.dim),
+            )));
+            app.hitboxes.list_rows.push(None);
+            if lines.len() >= visible_rows {
+                break;
+            }
+        }
+
+        let selected = vis_idx == app.selected_visible;
+        let row_bg = if selected { t.surface } else { t.bg };
+        let base = if selected {
+            Style::default()
+                .fg(t.text)
+                .bg(row_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.soft).bg(row_bg)
+        };
+        let muted = Style::default().fg(t.dim).bg(row_bg);
+        let warn = Style::default().fg(t.warn).bg(row_bg);
+
+        let mut spans: Vec<Span> = Vec::new();
+        // Selection bar ▌ or space.
+        if selected {
+            spans.push(Span::styled("▌", Style::default().fg(ACCENT).bg(row_bg)));
+        } else {
+            spans.push(Span::styled(" ", muted));
+        }
+        spans.push(Span::styled(" ", base));
+
+        // ★ prefix for favorites.
+        let name_budget = cols.name;
+        let star = if repo.badge == "★" { "★ " } else { "" };
+        let name_style = base;
+        let name_spans = name_match_spans(
+            &format!("{star}{}", repo.name),
+            &app.filter,
+            name_style,
+            name_budget,
+            selected,
+            t,
+            row_bg,
+        );
+        spans.extend(name_spans);
+        spans.push(Span::styled("  ", base));
+
+        // Branch + dirty/ahead (warn only on * / ↑N).
+        if let Some(branch) = &repo.git_branch {
+            let mut suffix = String::new();
+            if repo.git_dirty {
+                suffix.push('*');
+            }
+            if repo.git_ahead > 0 {
+                suffix.push_str(&format!("↑{}", repo.git_ahead));
+            }
+            let core_w = cols.branch.saturating_sub(display_width(&suffix));
+            let core = ellipsize_end(branch, core_w);
+            let core_trim = core.trim_end();
+            if suffix.is_empty() {
+                spans.push(Span::styled(pad_line(core_trim, cols.branch), muted));
+            } else {
+                spans.push(Span::styled(pad_line(core_trim, core_w), muted));
+                spans.push(Span::styled(suffix, warn));
+            }
+        } else {
+            spans.push(Span::styled(pad_line("", cols.branch), muted));
+        }
+
+        spans.push(Span::styled("  ", base));
+
+        // Remembered agent — dim / text, never accent.
+        let agent_style = if selected {
+            Style::default().fg(t.text).bg(row_bg)
+        } else {
+            Style::default().fg(t.dim).bg(row_bg)
+        };
+        if let Some(action) = repo.remembered_agent {
+            spans.push(Span::styled(
+                pad_line(action.label(), cols.agent),
+                agent_style,
+            ));
+        } else {
+            spans.push(Span::styled(pad_line("", cols.agent), agent_style));
+        }
+
+        spans.push(Span::styled("  ", base));
+
+        // Path: root prefix dimmer than leaf.
+        let full = display_path(&repo.path);
+        let path_spans = path_column_spans(&full, &root_disp, cols.path, row_bg, t, selected);
+        spans.extend(path_spans);
+
+        // Pad remainder so surface bleeds full width.
+        let used: usize = spans.iter().map(|s| display_width(s.content.as_ref())).sum();
+        if used < area.width as usize {
+            spans.push(Span::styled(
+                " ".repeat(area.width as usize - used),
+                Style::default().bg(row_bg),
+            ));
+        }
+
+        lines.push(Line::from(spans));
+        app.hitboxes.list_rows.push(Some(vis_idx));
+        prev_badge = Some(repo.badge);
+        repo_i += 1;
+    }
+
+    // Pad remaining rows.
+    while lines.len() < visible_rows {
+        lines.push(Line::from(Span::styled(
+            " ".repeat(area.width as usize),
+            Style::default().bg(t.bg),
+        )));
+        app.hitboxes.list_rows.push(None);
     }
 
     frame.render_widget(Paragraph::new(lines), area);
+
+    // Scroll affordance ▲/▼ in corner cells.
+    let more_below = repo_i < app.visible_repos.len();
+    if show_up && area.width > 0 && area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("▲", Style::default().fg(t.dim).bg(t.bg))),
+            Rect {
+                x: area.x + area.width - 1,
+                y: area.y,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
+    if more_below && area.width > 0 && area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("▼", Style::default().fg(t.dim).bg(t.bg))),
+            Rect {
+                x: area.x + area.width - 1,
+                y: area.y + area.height - 1,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
 }
 
-fn centered_rect(screen: Rect) -> Rect {
+/// Bold matched substrings in the name (filter tokens).
+fn name_match_spans(
+    name: &str,
+    filter: &str,
+    base: Style,
+    width: usize,
+    selected: bool,
+    t: Theme,
+    row_bg: Color,
+) -> Vec<Span<'static>> {
+    let display = ellipsize_end(name, width);
+    let raw = display.trim_end();
+    let pad = width.saturating_sub(display_width(raw));
+    let query = filter.trim().to_lowercase();
+    if query.is_empty() {
+        return vec![Span::styled(pad_line(name, width), base)];
+    }
+
+    let lower = raw.to_lowercase();
+    let mut best: Option<(usize, usize)> = None;
+    for part in query.split_whitespace() {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(pos) = lower.find(part) {
+            best = Some((pos, pos + part.len()));
+            break;
+        }
+    }
+
+    let mut spans = Vec::new();
+    if let Some((start, end)) = best {
+        // Byte indices on lowercased ASCII-compatible name (filters are lowercase ASCII).
+        let before = raw.get(..start).unwrap_or("").to_string();
+        let mid = raw.get(start..end).unwrap_or("").to_string();
+        let after = raw.get(end..).unwrap_or("").to_string();
+        let bold = Style::default()
+            .fg(if selected { t.text } else { t.soft })
+            .bg(row_bg)
+            .add_modifier(Modifier::BOLD);
+        if !before.is_empty() {
+            spans.push(Span::styled(before, base));
+        }
+        if !mid.is_empty() {
+            spans.push(Span::styled(mid, bold));
+        }
+        if !after.is_empty() {
+            spans.push(Span::styled(after, base));
+        }
+        if pad > 0 {
+            spans.push(Span::styled(" ".repeat(pad), base));
+        }
+    } else {
+        spans.push(Span::styled(pad_line(raw, width), base));
+    }
+    spans
+}
+
+fn path_column_spans(
+    full: &str,
+    root_disp: &str,
+    width: usize,
+    row_bg: Color,
+    t: Theme,
+    _selected: bool,
+) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(t.dim).bg(row_bg);
+    let leaf_st = Style::default().fg(t.muted).bg(row_bg);
+
+    let prefix = format!("{root_disp}/");
+    if full.starts_with(&prefix) {
+        let truncated = ellipsize_front(full, width);
+        let tr = truncated.trim_end();
+        if let Some(rest) = tr.strip_prefix(&prefix) {
+            let p = pad_line(&prefix, display_width(&prefix).min(width));
+            let r_w = width.saturating_sub(display_width(&p));
+            return vec![
+                Span::styled(p, dim),
+                Span::styled(pad_line(rest, r_w), leaf_st),
+            ];
+        }
+        return vec![Span::styled(pad_line(tr, width), dim)];
+    }
+
+    vec![Span::styled(ellipsize_front(full, width), dim)]
+}
+
+/// Content-aware centered panel (command-palette style).
+fn panel_rect(screen: Rect, content_rows: u16) -> Rect {
     let width = screen.width.min(MAX_WIDTH).max(40);
-    let height = screen.height.saturating_sub(4).min(24).max(12);
+    // Leave a little margin, but allow taller panels on large terminals.
+    let max_h = screen.height.saturating_sub(2).max(MIN_PANEL_HEIGHT);
+    let height = content_rows
+        .saturating_add(2) // borders
+        .max(MIN_PANEL_HEIGHT)
+        .min(max_h)
+        .min(screen.height.max(1));
     Rect {
         x: screen.x + screen.width.saturating_sub(width) / 2,
         y: screen.y + screen.height.saturating_sub(height) / 2,
-        width,
+        width: width.min(screen.width.max(1)),
         height,
     }
 }
@@ -3503,8 +4128,15 @@ fn repos_from_candidates(
 
 /// Fan out git inspect; UI paints immediately and `poll_git_meta` fills badges.
 /// ponytail: one thread per path; a stuck network/iCloud mount can leak a blocked thread
-/// for process lifetime — no timeout machinery (acceptable for local launcher).
+/// for process lifetime. UI side abandons the channel after 10 s (`git_started_at`) so the
+/// poll loop is not pinned at 40 ms forever.
 fn spawn_git_metadata(paths: Vec<PathBuf>) -> (Receiver<(PathBuf, GitMeta)>, usize) {
+    // Demo ships pre-baked branch/dirty; real inspect would clobber badges with empty.
+    if demo_mode_enabled() {
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        return (rx, 0);
+    }
     let n = paths.len();
     let (tx, rx) = mpsc::channel();
     for path in paths {
@@ -4096,6 +4728,70 @@ fn field_row_style(selected: bool, t: &Theme) -> Style {
     } else {
         Style::default().fg(t.soft).bg(t.bg)
     }
+}
+
+/// `?` keymap overlay — reuses New Project popup chrome (Clear + opaque + border).
+fn draw_help_overlay(frame: &mut Frame<'_>, _app: &App) {
+    let t = _app.theme();
+    let lines: &[&str] = &[
+        "enter        open selected workspace with agent",
+        ".            resume last session",
+        "space        toggle favorite ★",
+        "1-9          pick agent chip",
+        "n            new project",
+        "s            settings",
+        "type         filter by name or path · esc clears",
+        "e            open in editor (Default IDE)",
+        "f            reveal in Finder",
+        "c            copy workspace path",
+        "g            open GitHub (if remote)",
+        "hover        dim agent chip → install missing CLI",
+        "theme        Settings → UI theme (auto / light / dark)",
+        "",
+        "esc / ?      close this help",
+    ];
+    let content = lines.len() as u16;
+    let width = frame.area().width.min(72).max(40);
+    let height = (content + 4)
+        .min(frame.area().height.saturating_sub(2))
+        .max(10);
+    let area = Rect {
+        x: frame.area().x + frame.area().width.saturating_sub(width) / 2,
+        y: frame.area().y + frame.area().height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(t.bg).fg(t.text)),
+        area,
+    );
+    let block = Block::default()
+        .title(format!(" {APP_NAME} · Keys "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(t.bg).fg(t.text));
+    frame.render_widget(block, area);
+
+    let inner = inset(area, 2, 1);
+    let mut out = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            out.push(Line::from(""));
+            continue;
+        }
+        let (key, rest) = if let Some(idx) = line.find(char::is_whitespace) {
+            (line[..idx].to_string(), line[idx..].trim_start().to_string())
+        } else {
+            (line.to_string(), String::new())
+        };
+        out.push(Line::from(vec![
+            Span::styled(pad_line(&key, 12), Style::default().fg(t.key).bg(t.bg)),
+            Span::styled(rest, Style::default().fg(t.dim).bg(t.bg)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(out), inner);
 }
 
 /// Modal popup over the picker (not a full-screen replacement).
