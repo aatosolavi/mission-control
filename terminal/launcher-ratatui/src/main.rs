@@ -2219,7 +2219,8 @@ fn draw_filter(frame: &mut Frame<'_>, app: &App, area: Rect, t: Theme) {
     let gap = " ".repeat(w.saturating_sub(display_width(&left).saturating_add(count_w)).max(0));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(left, Style::default().fg(t.text)),
+            // Match empty-state dim so typing does not flash bright text.
+            Span::styled(left, Style::default().fg(t.dim)),
             Span::raw(gap),
             Span::styled(count, Style::default().fg(t.dim)),
         ])),
