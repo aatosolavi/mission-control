@@ -72,13 +72,49 @@ The browser page stays a terminal surface. Workspace/app selection lives in a na
 - Dev fallback path: `terminal/launcher-ratatui/target/release/t0`
 - The PTY broker automatically starts the installed binary when it exists.
 - If the binary is missing, the broker falls back to the normal login shell.
-- Set `GROK_TERMINAL_USE_LAUNCHER=0` to force shell-first behavior.
+- Set `MC_USE_LAUNCHER=0` (or `GROK_TERMINAL_USE_LAUNCHER=0`) to force shell-first behavior.
 
 The TUI scans `MC_WORKSPACE_ROOT` (default `~/dev` or `$HOME`), shows repos centered in the terminal, and supports keyboard and mouse input through terminal events. App choices include **Grok**, **Codex**, **Pi**, **Cursor**, **Claude**, **Amp**, **Devin**, **Droid**, and **Shell** (keys `1`–`9`, or Tab). Missing CLIs are dimmed; **hover** (or enter / number key) starts a background install with a progress bar under the panel when a recipe is known.
 
+### List sections
+
+Top to bottom (live discovery and **demo mode** share this order):
+
+| Section | Badge / label |
+|---|---|
+| **★ favorites** | `★` |
+| **recent** | recents from `$MC_DATA_DIR/recent-workspaces.txt` + state |
+| **last** | last session / last cwd |
+| **root** | the workspace root itself when it is a repo |
+| **scan** | peers under the workspace root — section label is the root path |
+
+Selection: full-width surface + `▌` accent bar. Paint lists workspaces first; git badges (branch / dirty / ahead) fill in async so dead mounts cannot hang the UI.
+
+**Demo / screenshots:** `MC_DEMO=1 t0` or `MC_MOCK=1 t0` — fake public-looking workspaces under `~/work/…`, skips splash, no real FS discovery. Section order matches the table above.
+
+### Keys (summary)
+
+| Key | Action |
+|---|---|
+| `enter` | Open selected workspace with agent |
+| `.` | Resume last workspace + agent (filter empty) |
+| `space` | Toggle favorite `★` (filter empty) |
+| `1`–`9` | Pick agent chip |
+| `n` | **New Project** — scaffold + optional headless agent init (stays in TUI; job bar streams init) |
+| `s` | Settings — splash, default agent, IDE for `e`, UI theme, workspace root |
+| `?` | Full keymap overlay |
+| type | Filter by name/path; `esc` clears filter, then closes launcher |
+| `e` / `f` / `c` / `g` | IDE / Finder / copy path / open origin (filter empty) |
+
+App chip **Cursor** launches the **Cursor Agent** CLI (`agent` / `cursor-agent`). The shell command `cursor` on many installs is only a shim and does not open the IDE. Full map: [launcher-ratatui/README.md](../terminal/launcher-ratatui/README.md).
+
 ### Cold-start splash
 
-On **process start** of `t0` (new tab / new PTY), a short **T-0** splash uses the same bordered panel + orange accent as the picker. It does **not** reappear when an agent exits back to the launcher. Any key skips. Disable: `MC_SPLASH=0`.
+On **process start** of `t0` (new tab / new PTY), a short **T-0** splash uses the same bordered panel + orange accent as the picker. It does **not** reappear when an agent exits back to the launcher. Any key skips. Disable: `MC_SPLASH=0` (or Settings).
+
+### Motion (silence at rest)
+
+One live status region only: idle tips (~30 s, preemptible), flashes, and job copy share that slot. Braille spinner only while install/init jobs run. No per-row idle animation.
 
 ### Memory
 
@@ -89,20 +125,6 @@ Stored in `$MC_DATA_DIR/launcher-state.json`:
 | (auto) | Last agent per workspace — re-selects when you highlight a repo |
 | `space` | Toggle favorite (filter must be empty); favorites sort first with `★` |
 | `.` | Continue last workspace + agent (filter must be empty) |
-
-List order: **favorites → recents → last cwd → root scan**.
-
-### Side actions (filter empty)
-
-| Key | Action |
-|---|---|
-| `e` | Open workspace **folder in IDE** (`open -a Cursor` when Cursor.app exists; not the agent CLI) |
-| `f` | Reveal in Finder (`open`) |
-| `c` | Copy absolute path (`pbcopy`) |
-| `g` | Open `origin` remote in the browser (GitHub-style URLs) |
-| `s` | Settings — splash, default agent, default IDE for `e`, UI theme, workspace root picker |
-
-App chip **Cursor** launches the **Cursor Agent** CLI (`agent` / `cursor-agent`). The shell command `cursor` on many installs is only a shim and does not open the IDE.
 
 ## Branding
 
@@ -123,7 +145,13 @@ Typing normal characters filters workspace names and paths live. `Backspace` edi
 
 `?cwd=/absolute/path` still bypasses the launcher and starts a shell directly in that path. That keeps direct deep links useful.
 
-Each browser tab gets a generated session id in `sessionStorage`, so reloading the page reattaches to the same PTY session and replays recent terminal output. A new tab gets a new session. Disconnected tabs are retained for 6 hours by default so laptop sleep or temporary network/browser disconnects do not immediately kill running sessions. Override with `GROK_TERMINAL_SESSION_RETAIN_MS`.
+Each browser tab gets a generated session id in `sessionStorage`, so reloading the page reattaches to the same PTY session and replays recent terminal output. A new tab gets a new session. Disconnected tabs are retained for **6 hours** by default so laptop sleep or temporary network/browser disconnects do not immediately kill running sessions. Override with `MC_SESSION_RETAIN_MS` (alias `GROK_TERMINAL_SESSION_RETAIN_MS`). After upgrading the browser page or broker, do a **hard reload** so the tab picks up the new client and reconnects cleanly; retained sessions still reattach when the session id matches.
+
+### Web paint / sessions (0.2.2+)
+
+- The launcher does **not** call `terminal.clear()` at startup (ratatui 0.30 cursor-position query under history replay could exit the process and respawn in a loop).
+- PTY broker **coalesces** output; the page batches `term.write` on `requestAnimationFrame` so one full paint is one write, not dozens of ~1 KB frames.
+- Cursor DOM probe is light (no per-message sync).
 
 Stable named local addresses are supported:
 

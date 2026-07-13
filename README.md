@@ -69,12 +69,41 @@ MC_DEMO=1 t0       # same UI with fake public-looking repos (for screenshots)
 | Piece | Role |
 |---|---|
 | **Browser UI** | Full-page xterm.js, light/dark/system, orange accent |
-| **PTY broker** | Real local shell over WebSocket on **127.0.0.1:4322** |
-| **`t0`** | Filter workspaces, pick agent, go |
+| **PTY broker** | Real local shell over WebSocket on **127.0.0.1:4322** (page reaches it same-origin at `/pty`) |
+| **`t0`** | Workspace list + agent pad inside the PTY |
 | **Sessions** | Reload reattaches; idle retain across laptop sleep |
 | **Helium extension** | `extension/` → Cmd+T becomes a terminal |
 
+### Workspace list (`t0`)
+
+Sections, top to bottom:
+
+1. **★ favorites**
+2. **recent**
+3. **last** (last session / cwd)
+4. **root** (the workspace root itself, if it is a repo)
+5. **scan** under the workspace root (section label = that path)
+
+Type to filter by name or path. **Git rows:** branch · `*` dirty · `↑N` ahead · remembered agent. Selection is a full-width surface with a `▌` accent bar.
+
+Demo mode (`MC_DEMO=1 t0` / `MC_MOCK=1`) uses the **same section order** with fake repos under `~/work/…` and skips splash.
+
 ### T-0 keys (`t0`)
+
+| Key | Does |
+|-----|------|
+| **enter** | Open selected workspace with agent |
+| **`.`** | Resume last workspace + agent (filter empty) |
+| **space** | Toggle favorite (`★`) (filter empty) |
+| **1–9** | Pick agent chip |
+| **n** | New Project popup |
+| **s** | Settings |
+| **?** | Full keymap overlay |
+| type | Filter by name or path · **esc** clears |
+| **tab** / ←→ | Move between agent chips |
+| ↑↓ / wheel | Move through workspaces |
+
+**Agents (1–9)**
 
 | Key | App |
 |-----|-----|
@@ -90,10 +119,9 @@ MC_DEMO=1 t0       # same UI with fake public-looking repos (for screenshots)
 
 Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) to **install** npm-backed agents (Codex, Claude, Pi) when a recipe is known. Script-based installers need `MC_ALLOW_SCRIPT_INSTALL=1`.
 
-**Memory**
-- Last agent per workspace (auto-select on highlight)
-- **`space`** — favorite (`★` floats to top)
-- **`.`** — resume last workspace + agent
+**New Project (`n`)** — scaffold a git repo under a chosen parent, optional headless agent init (Grok / Codex / Claude / …). Multi-line notes with **Shift+Enter**; you stay in the pad while init streams into a job bar.
+
+**Settings (`s`)** — splash, default agent, IDE for `e`, UI theme (`auto` / `dark` / `light`), workspace root picker.
 
 **Side actions** (filter empty)
 
@@ -103,9 +131,10 @@ Missing CLIs are **dimmed**. **Hover** a dim chip (or press its number / enter) 
 | **`f`** | Finder |
 | **`c`** | Copy path |
 | **`g`** | GitHub origin |
-| **`s`** | Settings (splash, default agent, IDE for `e`, UI theme, workspace root picker) |
 
-**Git rows:** branch · `*` dirty · `↑N` ahead · remembered agent on the row.
+**Memory** — last agent per workspace (auto-select on highlight); favorites / settings in `$MC_DATA_DIR/launcher-state.json`; recents also in `recent-workspaces.txt`.
+
+**Motion** — one live status region (tips ~every 30 s when idle); spinner only while install/init jobs run. Full map: [launcher README](./terminal/launcher-ratatui/README.md).
 
 ### Themes
 
@@ -136,8 +165,10 @@ No portless (or Node < 24)? Nothing breaks — `http://127.0.0.1:4321` always wo
 | `MC_WORKSPACE_ROOT` | `~/dev` if it exists, else `$HOME` (or path set in Settings) |
 | `MC_DATA_DIR` | `~/.t-0` (legacy `~/.mission-control` / `~/.grok-mission-control` auto-migrated) |
 | `MC_BIND_HOST` | `127.0.0.1` |
-| `MC_SPLASH` | splash on cold start (`0` to disable) |
-| `MC_DEMO` / `MC_MOCK` | `1` = fake workspaces for marketing screenshots |
+| `MC_SPLASH` | splash on cold start (`0` to disable; also settable in Settings) |
+| `MC_DEMO` / `MC_MOCK` | `1` = fake workspaces for marketing screenshots (skips splash) |
+| `MC_SESSION_RETAIN_MS` | idle session retain (default 6 h; alias `GROK_TERMINAL_SESSION_RETAIN_MS`) |
+| `MC_USE_LAUNCHER` | `0` = shell-first (skip launcher; alias `GROK_TERMINAL_USE_LAUNCHER`) |
 | `GROK_TERMINAL_*_COMMAND` | override agent CLI paths |
 
 ## For coding agents

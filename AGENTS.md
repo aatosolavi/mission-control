@@ -21,6 +21,7 @@ bun install
 bun run terminal              # dev / foreground
 bun run terminal:install      # rebuild t0 + reinstall LaunchAgent
 bun run check                 # CI-equivalent: vendor + tsc + shell + data-dir + cargo check
+cargo test --manifest-path terminal/launcher-ratatui/Cargo.toml
 ```
 
 ## Config
@@ -28,7 +29,14 @@ bun run check                 # CI-equivalent: vendor + tsc + shell + data-dir +
 - `MC_WORKSPACE_ROOT` — where `t0` scans for git repos
 - `MC_DATA_DIR` — state/logs/bin (default `~/.t-0`; legacy `~/.mission-control` / `~/.grok-mission-control` auto-migrated)
 - `MC_BIND_HOST` — default `127.0.0.1`
-- `MC_DEMO=1` / `MC_MOCK=1` — fake public-looking workspaces for marketing screenshots (`MC_DEMO=1 t0`); skips splash
+- `MC_SPLASH=0` — skip cold-start splash (also Settings)
+- `MC_DEMO=1` / `MC_MOCK=1` — fake public-looking workspaces for marketing screenshots (`MC_DEMO=1 t0`); skips splash; **same list section order** as real discovery
+- `MC_SESSION_RETAIN_MS` — idle PTY retain (default 6 h; alias `GROK_TERMINAL_SESSION_RETAIN_MS`)
+- `MC_UI_THEME` — set by the PTY broker from browser theme for launcher `auto` mode (not usually set by hand)
+
+## Launcher list sections (order)
+
+★ favorites → recent → last → root → scan under workspace root (label = root path). Keys: enter open, `.` resume, space favorite, 1–9 agent, n new project, s settings, ? help, type to filter.
 
 ## Conventions
 

@@ -32,6 +32,14 @@ Rebuild launcher only:
 bun run terminal:launcher:build
 ```
 
+Launcher unit tests:
+
+```bash
+cargo test --manifest-path terminal/launcher-ratatui/Cargo.toml
+```
+
+CI-equivalent check: `bun run check` (vendor + tsc + shell + data-dir + cargo check).
+
 ## Layout
 
 | Path | Role |
