@@ -4025,9 +4025,9 @@ fn new_project_popup_rect(screen: Rect) -> Rect {
     } else {
         screen.width.max(1)
     };
-    // Taller for multi-line notes (help+4 fields+label+3 notes+create+status ≈ 12 + chrome).
-    let preferred_h = screen.height.saturating_sub(2).min(22);
-    let height = if preferred_h >= 18 {
+    // Multi-line notes need ~12 content rows + chrome; keep compact (3 shorter than 18–22).
+    let preferred_h = screen.height.saturating_sub(2).min(19);
+    let height = if preferred_h >= 15 {
         preferred_h
     } else {
         screen.height.max(1)
