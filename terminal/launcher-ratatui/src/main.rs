@@ -2559,7 +2559,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         && mouse.row >= panel.y
                         && mouse.row < panel.y.saturating_add(panel.height)
                     {
-                        let inner = inset(panel, 2, 1);
+                        // Match draw_new_project_popup: inset(2,0) then +1 top / -2 height for border.
+                        let padded = inset(panel, 2, 0);
+                        let inner = Rect {
+                            x: padded.x,
+                            y: padded.y.saturating_add(1),
+                            width: padded.width,
+                            height: padded.height.saturating_sub(2),
+                        };
                         if let Some(field) = hit_test_new_project_field(inner, mouse.row) {
                             app.new_project.field = field;
                         }
@@ -4011,7 +4018,11 @@ fn field_row_style(selected: bool, t: &Theme) -> Style {
 /// Modal popup over the picker (not a full-screen replacement).
 fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
     let t = app.theme();
-    let area = new_project_popup_rect(frame.area());
+    let show_status = app
+        .status
+        .as_ref()
+        .is_some_and(|s| !s.trim().is_empty());
+    let area = new_project_popup_rect(frame.area(), show_status);
     app.panel_area = area;
 
     // Opaque layer: Clear removes underneath glyphs; solid fill paints every cell.
@@ -4028,24 +4039,35 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
         .style(Style::default().bg(t.bg).fg(t.text));
     frame.render_widget(block, area);
 
-    let inner = inset(area, 2, 1);
+    // Horizontal pad 2, vertical pad 0 — border already occupies top/bottom of `area`.
+    let inner = inset(area, 2, 0);
+    // Sit content just inside the border (not double-padded).
+    let inner = Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(1),
+        width: inner.width,
+        height: inner.height.saturating_sub(2),
+    };
     frame.render_widget(
         Block::default().style(Style::default().bg(t.bg)),
         inner,
     );
 
-    // Exactly the field rows — no vertical filler.
-    // help 1 · Name/Parent/Template/Init 4 · Notes label 1 · notes box N · Create 1 · status 1
+    // Exactly the field rows — status only when there is a message (no blank spare row).
+    // help 1 · Name/Parent/Template/Init 4 · Notes label 1 · notes box N · Create 1 · [status 1]
+    let mut constraints = vec![
+        Constraint::Length(1), // help
+        Constraint::Length(4), // name / parent / template / init
+        Constraint::Length(1), // notes label
+        Constraint::Length(NOTES_VIEWPORT_ROWS), // notes box
+        Constraint::Length(1), // create
+    ];
+    if show_status {
+        constraints.push(Constraint::Length(1));
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // help
-            Constraint::Length(4), // name / parent / template / init
-            Constraint::Length(1), // notes label
-            Constraint::Length(NOTES_VIEWPORT_ROWS), // notes box
-            Constraint::Length(1), // create
-            Constraint::Length(1), // status
-        ])
+        .constraints(constraints)
         .split(inner);
 
     let col_w = chunks[0].width.max(1) as usize;
@@ -4195,31 +4217,34 @@ fn draw_new_project_popup(frame: &mut Frame<'_>, app: &mut App) {
         chunks[4],
     );
 
-    let status_w = chunks[5].width.max(1) as usize;
-    let status_text = app.status.as_deref().unwrap_or(" ");
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            pad_line(status_text, status_w),
-            Style::default().fg(ACCENT).bg(t.bg),
-        )))
-        .style(Style::default().bg(t.bg)),
-        chunks[5],
-    );
+    if show_status {
+        if let Some(status) = app.status.as_deref() {
+            let status_w = chunks[5].width.max(1) as usize;
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    pad_line(status, status_w),
+                    Style::default().fg(ACCENT).bg(t.bg),
+                )))
+                .style(Style::default().bg(t.bg)),
+                chunks[5],
+            );
+        }
+    }
 }
 
-fn new_project_popup_rect(screen: Rect) -> Rect {
+fn new_project_popup_rect(screen: Rect, show_status: bool) -> Rect {
     // Width: comfortable default, never larger than screen.
     let width = if screen.width >= 44 {
         screen.width.min(76).max(44)
     } else {
         screen.width.max(1)
     };
-    // Height = exact content rows + vertical inset (1+1) so border sits tight.
-    // help1 + fields4 + notes_label1 + notes_box N + create1 + status1
-    let content_rows: u16 = 1 + 4 + 1 + NOTES_VIEWPORT_ROWS + 1 + 1;
-    let inset_v: u16 = 2; // inset(area, 2, 1) → ±1 top/bottom
+    // Height = border (2) + exact content rows (no blank status when idle).
+    // help1 + fields4 + notes_label1 + notes_box N + create1 [+ status1]
+    let content_rows: u16 =
+        1 + 4 + 1 + NOTES_VIEWPORT_ROWS + 1 + if show_status { 1 } else { 0 };
     let height = content_rows
-        .saturating_add(inset_v)
+        .saturating_add(2) // top + bottom border
         .min(screen.height.max(1));
     Rect {
         x: screen.x + screen.width.saturating_sub(width) / 2,
