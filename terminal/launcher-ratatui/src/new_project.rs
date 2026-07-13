@@ -4,7 +4,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use unicode_width::UnicodeWidthChar;
@@ -237,11 +237,23 @@ build/
 fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Run git while the TUI owns the terminal — never inherit stdio or "Initialized empty
+/// Git repository" / commit banners paint over the alternate screen.
+fn git_silent(args: &[&str]) -> Result<std::process::ExitStatus, String> {
+    Command::new("git")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("git {}: {e}", args.first().unwrap_or(&"")))
 }
 
 fn write_scaffold_contents(
@@ -306,20 +318,13 @@ Add architecture and workflow links as the project grows.
     }
 
     let path_str = target.display().to_string();
-    let init = Command::new("git")
-        .args(["-C", &path_str, "init", "-b", "main"])
-        .status()
-        .map_err(|e| format!("git init: {e}"))?;
+    let init = git_silent(&["-C", &path_str, "init", "-b", "main"])?;
     if !init.success() {
         return Err("git init failed".into());
     }
-    let _ = Command::new("git")
-        .args(["-C", &path_str, "add", "-A"])
-        .status();
+    let _ = git_silent(&["-C", &path_str, "add", "-A"]);
     // Commit may fail without user.email — scaffold still succeeds.
-    let _ = Command::new("git")
-        .args(["-C", &path_str, "commit", "-m", "chore: scaffold from t0"])
-        .status();
+    let _ = git_silent(&["-C", &path_str, "commit", "-m", "chore: scaffold from t0"]);
     Ok(())
 }
 
