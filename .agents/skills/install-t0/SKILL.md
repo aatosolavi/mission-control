@@ -91,7 +91,7 @@ launchctl kickstart -k "gui/$(id -u)/com.mission-control.terminal"
 | `MC_DATA_DIR` | State/logs/bin (default `~/.t-0`) |
 | `MC_BIND_HOST` | Default `127.0.0.1` only |
 | `MC_SPLASH=0` | Skip cold-start splash |
-| `MC_DEMO=1` | Fake workspaces for screenshots (not for daily use) |
+| `MC_DEMO=1` / `MC_MOCK=1` | Fake workspaces for screenshots (not for daily use) |
 
 Do **not** change bind to `0.0.0.0` without explicit user consent and `MC_ALLOW_REMOTE_BIND=1`.
 
@@ -107,7 +107,8 @@ Do **not** change bind to `0.0.0.0` without explicit user consent and `MC_ALLOW_
 | Goal | Command / URL |
 |------|----------------|
 | Open terminal tab | https://t0.localhost (fallback http://127.0.0.1:4321) |
-| Workspace + agent pad | `t0` |
+| Workspace + agent pad | `t0` (list: ★ favorites → recent → last → root → scan) |
+| Resume / favorite / new / settings | `.` · `space` · `n` · `s` · `?` help |
 | Helium Cmd+T | Load `extension/` as unpacked Chrome/Helium extension |
 | Docs | https://github.com/aatosolavi/t-0/blob/main/docs/browser-terminal.md |
 

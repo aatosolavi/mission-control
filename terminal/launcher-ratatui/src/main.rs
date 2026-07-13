@@ -2267,7 +2267,13 @@ fn draw_repos(frame: &mut Frame<'_>, app: &mut App, area: Rect, t: Theme) {
 
     let visible_rows = area.height as usize;
     let cols = compute_columns(area.width);
-    let root_disp = display_path(&workspace_root(&app.state.settings));
+    // Demo repos live under ~/work; use that for the scan-section label so it
+    // matches the path column (real mode still uses configured workspace root).
+    let root_disp = if discover::demo_mode_enabled() {
+        display_path(&discover::demo_root())
+    } else {
+        display_path(&workspace_root(&app.state.settings))
+    };
     let filtering = !app.filter.is_empty();
     let mut lines: Vec<Line> = Vec::new();
 

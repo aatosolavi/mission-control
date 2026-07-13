@@ -24,7 +24,8 @@ pub fn demo_mode_enabled() -> bool {
 }
 
 /// Demo workspaces under `~/work/...` so path column shows clean `~/work/foo` (not /tmp).
-fn demo_root() -> PathBuf {
+/// Also the synthetic "workspace root" for section labels in demo mode.
+pub fn demo_root() -> PathBuf {
     home_dir().join("work")
 }
 
@@ -47,20 +48,31 @@ fn ensure_demo_dirs(root: &Path) {
 }
 
 /// Hardcoded workspace rows for screenshots / demos (no real discovery).
+///
+/// Badge order matches live discovery so section separators look the same:
+/// favorites → recent → last → root → peers under the workspace root (`""`).
+/// Interleaving badges (e.g. `last` between two scan rows) splits the scan
+/// section and prints the root path twice — never do that here.
 pub fn demo_repos() -> Vec<Repo> {
     let root = demo_root();
     ensure_demo_dirs(&root);
 
     // name, dir, branch, dirty, ahead, agent, badge
+    // Same grouping as `discover_candidates` (not alphabetical across groups).
     let entries: &[(&str, &str, &str, bool, u32, Option<Action>, &str)] = &[
+        // ★ favorites
         ("northwind", "northwind", "main", false, 0, Some(Action::Claude), "★"),
         ("payload", "payload", "feature/auth", true, 2, Some(Action::Grok), "★"),
+        // recent
         ("relay", "relay", "develop", false, 0, Some(Action::Cursor), "recent"),
         ("orbit", "orbit", "main", true, 1, Some(Action::Claude), "recent"),
-        ("harbor", "harbor", "release/1.2", false, 0, Some(Action::Codex), ""),
+        // last (one row — last session / last cwd)
         ("signal", "signal", "main", false, 0, Some(Action::Grok), "last"),
-        ("ledger", "ledger", "feat/import", true, 0, Some(Action::Pi), ""),
+        // root (workspace root entry itself)
         ("t-0", "t-0", "main", false, 0, Some(Action::Claude), "root"),
+        // scan under root (empty badge → section label is the workspace path)
+        ("harbor", "harbor", "release/1.2", false, 0, Some(Action::Codex), ""),
+        ("ledger", "ledger", "feat/import", true, 0, Some(Action::Pi), ""),
     ];
 
     entries
@@ -166,5 +178,38 @@ fn push_candidate(
 ) {
     if path.is_dir() && seen.insert(path.clone()) {
         candidates.push((path, badge));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real discovery never interleaves badge groups; demo must match so the
+    /// scan section (empty badge) is not split by `last` / `root`.
+    #[test]
+    fn demo_repos_badge_order_matches_discovery_groups() {
+        let expected = ["★", "recent", "last", "root", ""];
+        let mut rank = std::collections::HashMap::new();
+        for (i, b) in expected.iter().enumerate() {
+            rank.insert(*b, i);
+        }
+        let mut prev = 0usize;
+        for repo in demo_repos() {
+            let r = *rank.get(repo.badge).expect("unknown demo badge");
+            assert!(
+                r >= prev,
+                "demo badge {:?} appears after a later group (order broken)",
+                repo.badge
+            );
+            prev = r;
+        }
+        // Each group that real discovery can show should appear once as a block.
+        let badges: Vec<&str> = demo_repos().iter().map(|r| r.badge).collect();
+        assert!(badges.contains(&"★"));
+        assert!(badges.contains(&"recent"));
+        assert!(badges.contains(&"last"));
+        assert!(badges.contains(&"root"));
+        assert!(badges.contains(&""));
     }
 }

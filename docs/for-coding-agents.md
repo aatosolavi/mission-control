@@ -59,18 +59,25 @@ Expect `t0` on PATH and HTTP **200** when the service is up.
 | Open terminal | https://t0.localhost (fallback http://127.0.0.1:4321) |
 | Pick repo + agent | `t0` in any terminal |
 | Resume last | `.` in the launcher (filter empty) |
-| Settings | `s` in the launcher |
-| Screenshot mode | `MC_DEMO=1 t0` (fake repos only) |
+| Favorite | `space` (filter empty) — `★` section at top |
+| New project | `n` — scaffold + optional headless agent init |
+| Settings | `s` — splash, default agent, IDE, theme, workspace root |
+| Help overlay | `?` |
+| Screenshot mode | `MC_DEMO=1 t0` or `MC_MOCK=1 t0` (fake repos under `~/work/…`; same list sections as real mode) |
+
+**List sections (top → bottom):** ★ favorites → recent → last → root → scan under workspace root.
 
 ## Env vars agents may set (with consent)
 
 | Variable | Purpose |
 |----------|---------|
 | `MC_WORKSPACE_ROOT` | Root folder of git repos to scan |
-| `MC_DATA_DIR` | Override state directory |
+| `MC_DATA_DIR` | Override state directory (default `~/.t-0`) |
 | `MC_BIND_HOST` | Keep `127.0.0.1` unless user insists otherwise |
 | `MC_SPLASH=0` | Skip splash |
-| `MC_USE_LAUNCHER=0` | Shell-first (skip launcher) |
+| `MC_DEMO=1` / `MC_MOCK=1` | Fake workspaces for screenshots only |
+| `MC_USE_LAUNCHER=0` | Shell-first (skip launcher; alias `GROK_TERMINAL_USE_LAUNCHER`) |
+| `MC_SESSION_RETAIN_MS` | Idle PTY retain (default 6 h) |
 
 ## Repo layout (if editing T-0 itself)
 
@@ -84,6 +91,15 @@ See [AGENTS.md](../AGENTS.md). Short version:
 
 Do **not** reintroduce a Next.js dashboard without explicit product direction.
 
+## Dev commands (editing T-0)
+
+```bash
+bun run terminal              # foreground stack
+bun run terminal:install      # rebuild t0 + LaunchAgent
+bun run check                 # vendor + tsc + shell + data-dir + cargo check
+cargo test --manifest-path terminal/launcher-ratatui/Cargo.toml
+```
+
 ## Failure modes
 
 1. **rustup missing** — install; `install.sh` will fail clearly.  
@@ -91,6 +107,7 @@ Do **not** reintroduce a Next.js dashboard without explicit product direction.
 3. **Wrong workspace root** — Settings → Workspace root, or `MC_WORKSPACE_ROOT`.  
 4. **Stale `mc` only** — re-run `bun run terminal:launcher:install` for `t0` + PATH shim.
 5. **`https://t0.localhost` dead but `:4321` fine** — `bunx portless proxy start`, then `bunx portless doctor`.
+6. **Lag / flicker after upgrade** — hard-reload the browser tab (sessions retain; client must pick up new page assets). Do not “fix” by restarting in a loop if history replay is still in flight.
 
 ## Copy this skill into an agent host
 
