@@ -12,7 +12,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fs,
-    io::{self, IsTerminal, stdout},
+    io::{self, IsTerminal, Write, stdout},
     path::{Path, PathBuf},
     process::Command,
     sync::mpsc::{Receiver, TryRecvError},
@@ -1296,6 +1296,21 @@ impl App {
         self.apply_filter();
     }
 
+    /// Bracketed paste into the workspace filter (printable chars only).
+    fn push_filter_paste(&mut self, text: &str) {
+        let mut changed = false;
+        for c in text.chars() {
+            if c.is_control() {
+                continue;
+            }
+            self.filter.push(c);
+            changed = true;
+        }
+        if changed {
+            self.apply_filter();
+        }
+    }
+
     fn pop_filter_char(&mut self) {
         self.filter.pop();
         self.apply_filter();
@@ -1390,6 +1405,8 @@ enum SideAction {
 }
 
 fn main() -> io::Result<()> {
+    install_panic_hook();
+
     // P3: build app (starts async git) before splash so badges fill during splash.
     let mut app = App::new();
     let mut first_ui = true;
@@ -1435,6 +1452,24 @@ fn main() -> io::Result<()> {
             None => return Ok(()),
         }
     }
+}
+
+/// Restore raw/alt/mouse if we panic while the TUI owns the PTY (browser or local).
+/// Installed once at process start — safe if already restored.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let mut out = io::stdout();
+        let _ = execute!(
+            out,
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            Show
+        );
+        let _ = out.flush();
+        previous(info);
+    }));
 }
 
 /// Splash: env MC_SPLASH wins; else launcher-state settings.splash (default on).
@@ -1944,6 +1979,21 @@ fn run_app(
                         .keep_selected_visible(app.hitboxes.list_height.max(1) as usize);
                 }
                 needs_draw = true;
+            }
+            Event::Paste(text) => {
+                // Bracketed paste (xterm.js / modern terminals). Without this,
+                // paste is ignored while the event is still consumed.
+                match app.screen {
+                    Screen::Picker if !app.help_open => {
+                        app.push_filter_paste(&text);
+                        needs_draw = true;
+                    }
+                    Screen::NewProject => {
+                        new_project_input::handle_paste(&mut app.new_project, &text);
+                        needs_draw = true;
+                    }
+                    _ => {}
+                }
             }
             _ => {}
                 }
