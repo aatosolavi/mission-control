@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.2] — 2026-07-13
+
+### 🛠 Fixes
+- **Web TUI crash-loop:** drop `terminal.clear()` at startup — ratatui 0.30 waits on cursor-position (`ESC[6n`) and can exit after ~2 s while the browser is still replaying session history; that respawned `t0`, grew history, and looked like lag / cursor flash
+- **Web paint lag:** coalesce PTY→WebSocket output (and batch `term.write` in the page) so a full-frame paint is one write, not dozens of ~1 KB frames
+- Exit cleanly when stdin is not a TTY / poll·read fails (no busy-loop after broker death)
+- Draw only when something visible changed; first frame still unconditional
+- Fixed-height picker panel + scroll math that accounts for section separators
+- Cursor DOM probe less aggressive (no per-message sync)
+
 ## [0.2.1] — 2026-07-13
 
 ### 🚀 Launch pad
