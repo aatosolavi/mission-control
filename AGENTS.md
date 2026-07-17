@@ -76,8 +76,8 @@ Cloud agents use `.cursor/environment.json`. Snapshot should include Bun (`~/.bu
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
 bun run check
 cargo test --manifest-path terminal/launcher-ratatui/Cargo.toml
-# live stack (also auto-started via environment terminals once launcher is installed):
-bun run terminal   # http://127.0.0.1:4321
+# live stack (auto-started via environment terminals; PTY then execs installed ~/.t-0/bin/t0):
+bun run terminal   # http://127.0.0.1:4321 — not `t0` directly
 ```
 
 Notes:

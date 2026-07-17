@@ -4,7 +4,7 @@
     {
       "name": "terminal",
       "command": "export PATH=\"$HOME/.bun/bin:$HOME/.local/bin:$PATH\" && bun run terminal",
-      "description": "Browser terminal stack — HTML :4321, PTY broker :4322"
+      "description": "Browser terminal stack — HTML :4321, PTY broker :4322. t0 is built in install and spawned by the PTY broker on connect; do not replace this command with the launcher binary alone."
     }
   ],
   "ports": [
