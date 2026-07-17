@@ -70,20 +70,20 @@ Keep these aligned on a release: `package.json`, `terminal/launcher-ratatui/Carg
 
 ## Cursor Cloud specific instructions
 
-Cloud agents use `.cursor/environment.json`. Snapshot should include Bun (`~/.bun`), Node 22, and Rust stable. After boot, `install` runs `bun install --frozen-lockfile`.
+Cloud agents use `.cursor/environment.json`. Snapshot should include Bun (`~/.bun`), Node 22, and Rust stable. After boot, `install` runs `bun install --frozen-lockfile` and `bun run terminal:launcher:build` (fails fast if `bun` is missing — no remote bootstrap).
 
 ```bash
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
 bun run check
 cargo test --manifest-path terminal/launcher-ratatui/Cargo.toml
-# optional live stack (also auto-started via environment terminals):
+# live stack (also auto-started via environment terminals once launcher is installed):
 bun run terminal   # http://127.0.0.1:4321
 ```
 
 Notes:
 - `bun run terminal:install` installs a macOS LaunchAgent — skip on Linux cloud VMs; use `bun run terminal` / `bun run terminal:launcher:build` instead.
 - `t0` needs a real TTY; non-interactive `t0` may exit with ENXIO — expected. Prefer `cargo test` / `bun run check` for verification.
-- Rebuild launcher after Rust edits: `bun run terminal:launcher:build`.
+- Rebuild launcher after Rust edits: `bun run terminal:launcher:build` (also done by cloud `install`).
 
 ## Do not reintroduce without intent
 
