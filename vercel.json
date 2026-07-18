@@ -1,6 +1,7 @@
 {
   "buildCommand": "node www/scripts/copy-install.mjs",
   "outputDirectory": "www/public",
+  "installCommand": "echo skip",
   "headers": [
     {
       "source": "/install",
