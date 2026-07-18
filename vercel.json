@@ -4,7 +4,7 @@
   "installCommand": "echo skip",
   "headers": [
     {
-      "source": "/install",
+      "source": "/(.*)",
       "headers": [
         {
           "key": "Content-Type",
@@ -18,6 +18,10 @@
     }
   ],
   "rewrites": [
+    {
+      "source": "/",
+      "destination": "/llms.txt"
+    },
     {
       "source": "/install.sh",
       "destination": "/install"
