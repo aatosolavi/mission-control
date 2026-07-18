@@ -1,0 +1,30 @@
+{
+  "buildCommand": "node www/scripts/copy-install.mjs",
+  "outputDirectory": "www/public",
+  "installCommand": "echo skip",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/plain; charset=utf-8"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=60, must-revalidate"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/llms.txt"
+    },
+    {
+      "source": "/install.sh",
+      "destination": "/install"
+    }
+  ]
+}

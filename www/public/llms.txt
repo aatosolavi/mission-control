@@ -1,0 +1,16 @@
+# T-0
+
+> Local-first browser terminal (real PTY) plus a Ratatui launcher for workspaces and coding agents. macOS.
+
+Install with `npx t-0`, or `curl -fsSL https://t-0.dev/install | bash`. Opens at https://t0.localhost (portless) or http://127.0.0.1:4321. State lives in `~/.t-0`. Bind stays on localhost.
+
+## Docs
+
+- [Install / agent playbook](https://github.com/aatosolavi/t-0/blob/main/docs/for-coding-agents.md): install, verify, env vars
+- [Install script](https://t-0.dev/install): canonical bash installer
+- [GitHub](https://github.com/aatosolavi/t-0): source
+
+## Optional
+
+- [README](https://github.com/aatosolavi/t-0/blob/main/README.md): product overview
+- [CHANGELOG](https://github.com/aatosolavi/t-0/blob/main/CHANGELOG.md): release notes
